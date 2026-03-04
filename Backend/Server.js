@@ -171,7 +171,7 @@ app.post('/webauthn/register', authLimiter, (req, res) => {
         if (results.length > 0) {
             // If user already exists, return a message
             console.error('Email already exists');
-            return res.status(400).json({ error: 'User already exists' });
+            return res.status(409).json({ error: 'User already exists' });
         }
 
         // Proceed with registration if the user doesn't exist
@@ -239,7 +239,7 @@ app.post('/webauthn/register/complete', (req, res) => {
     
     if (!pendingReg) {
         console.error('No pending registration found for user:', email);
-        return res.status(400).json({ error: 'No pending registration found. Please start registration again.' });
+        return res.status(404).json({ error: 'No pending registration found. Please start registration again.' });
     }
 
     const { challenge: storedChallenge, userId } = pendingReg;
@@ -367,9 +367,14 @@ app.post('/webauthn/authenticate', authLimiter, (req, res) => {
         // Retrieve the credential ID for this user
         const getCredentialQuery = `SELECT credential_id FROM users WHERE email = ?`;
         con.query(getCredentialQuery, [validatedEmail], (err, results) => {
-            if (err || !results || results.length === 0) {
+            if (err) {
                 console.error('Error fetching credential ID:', err);
-                return res.status(400).json({ error: 'User not found or not registered' });
+                return res.status(500).json({ error: 'Database error' });
+            }
+            
+            if (!results || results.length === 0) {
+                console.error('User not found or not registered');
+                return res.status(404).json({ error: 'User not found or not registered' });
             }
 
             const credentialId = results[0].credential_id;
@@ -411,19 +416,19 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
 
         if (!results || results.length === 0) {
             console.error('User not found:', email);
-            return res.status(400).json({ error: 'User not found' });
+            return res.status(404).json({ error: 'User not found' });
         }
         
         const userData = results[0];
         
         if (!userData.challenge) {
             console.error('No active challenge found for user');
-            return res.status(400).json({ error: 'No active authentication request' });
+            return res.status(401).json({ error: 'No active authentication request' });
         }
 
         if (!userData.public_key || !userData.credential_id) {
             console.error('Public key or credential ID not found for user');
-            return res.status(400).json({ error: 'User not properly registered' });
+            return res.status(422).json({ error: 'User not properly registered' });
         }
 
         const storedChallenge = userData.challenge;
@@ -515,7 +520,7 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
             });
         } catch (error) {
             console.error('Authentication verification error:', error);
-            return res.status(400).json({ 
+            return res.status(401).json({ 
                 error: 'Authentication failed',
                 details: error.message
             });
