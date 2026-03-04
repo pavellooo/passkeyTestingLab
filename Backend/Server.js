@@ -67,7 +67,7 @@ const emailSchema = Joi.object({
 });
 
 // Database connection pool with SSL support for production (auto-reconnects)
-const users = {};
+const pendingRegistrations = {}; // Store pending registrations in memory
 const con = mysql.createPool({
     host: process.env.DB_HOST || "localhost",
     user: process.env.DB_USER || "root",
@@ -183,44 +183,47 @@ app.post('/webauthn/register', authLimiter, (req, res) => {
         // Encode the challenge using base64url
         const challenge = base64url.encode(challengeBuffer);
 
-        // Store the new user and challenge in the database
-        const insertUserQuery = `
-            INSERT INTO users (email, user_id, challenge) 
-            VALUES (?, ?, ?)
-        `;
-        con.query(insertUserQuery, [validatedEmail, userId, challenge], (err) => {
-            if (err) {
-                console.error('Error storing challenge:', err);
-                return res.status(500).json({ error: 'Database error' });
+        // Store pending registration in memory (not in database yet)
+        pendingRegistrations[validatedEmail] = {
+            userId,
+            challenge,
+            timestamp: Date.now()
+        };
+
+        // Clean up expired pending registrations (older than 5 minutes)
+        const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+        Object.keys(pendingRegistrations).forEach(email => {
+            if (pendingRegistrations[email].timestamp < fiveMinutesAgo) {
+                delete pendingRegistrations[email];
             }
-
-            // Define WebAuthn options for registration
-            const publicKeyCredentialCreationOptions = {
-                challenge: challenge,
-                rp: {
-                    name: 'Passwordless login',
-                    id: expectedRPID
-                },
-                user: {
-                    id: userId,
-                    name: validatedEmail,
-                    displayName: validatedEmail,
-                },
-                pubKeyCredParams: [
-                    { type: 'public-key', alg: -7 },
-                    { type: 'public-key', alg: -257 }
-                ], // ES256 RS256
-                authenticatorSelection: {
-                    authenticatorAttachment: 'platform',
-                    residentKey: 'required',
-                    userVerification: 'required',
-                },
-                attestation: 'direct',
-            };
-
-            // Respond with WebAuthn options
-            res.json(publicKeyCredentialCreationOptions);
         });
+
+        // Define WebAuthn options for registration
+        const publicKeyCredentialCreationOptions = {
+            challenge: challenge,
+            rp: {
+                name: 'Passwordless login',
+                id: expectedRPID
+            },
+            user: {
+                id: userId,
+                name: validatedEmail,
+                displayName: validatedEmail,
+            },
+            pubKeyCredParams: [
+                { type: 'public-key', alg: -7 },
+                { type: 'public-key', alg: -257 }
+            ], // ES256 RS256
+            authenticatorSelection: {
+                authenticatorAttachment: 'platform',
+                residentKey: 'required',
+                userVerification: 'required',
+            },
+            attestation: 'direct',
+        };
+
+        // Respond with WebAuthn options
+        res.json(publicKeyCredentialCreationOptions);
     });
 });
 
@@ -231,28 +234,19 @@ app.post('/webauthn/register/complete', (req, res) => {
         return res.status(400).json({ error: 'Invalid request' });
     }
 
+    // Check if there's a pending registration for this email
+    const pendingReg = pendingRegistrations[email];
+    
+    if (!pendingReg) {
+        console.error('No pending registration found for user:', email);
+        return res.status(400).json({ error: 'No pending registration found. Please start registration again.' });
+    }
+
+    const { challenge: storedChallenge, userId } = pendingReg;
     const parsedCredential = credential;
-    const getChallengeQuery = `SELECT challenge, user_id FROM users WHERE email = ?`;
 
-    con.query(getChallengeQuery, [email], async function(err, results) {
-        if (err) {
-            console.error('Error fetching challenge:', err);
-            return res.status(400).json({ error: 'Database error' });
-        }
-       
-        if (!results) {
-            console.error('Invalid database response');
-            return res.status(500).json({ error: 'Database error' });
-        }
-       
-        if (results.length === 0 || !results[0].challenge) {
-            console.error('No challenge found for user');
-            return res.status(400).json({ error: 'Invalid authentication request' });
-        }
-       
-        let storedChallenge = results[0].challenge;
-        const userId = results[0].user_id;
-
+    // Use async IIFE to handle verification
+    (async () => {
         try {
             const verification = await verifyRegistrationResponse({
                 response: parsedCredential,
@@ -278,11 +272,7 @@ app.post('/webauthn/register/complete', (req, res) => {
                     !registrationInfo.credential.id || 
                     !registrationInfo.credential.publicKey) {
                     console.error('Missing required credential data in registrationInfo');
-                    con.query('DELETE FROM users WHERE email = ?', [email], (deleteErr) => {
-                        if (deleteErr) {
-                            console.error('Error deleting user after missing credential data:', deleteErr);
-                        }
-                    });
+                    delete pendingRegistrations[email]; // Clean up pending registration
                     return res.status(400).json({ error: 'Registration failed: incomplete credential data' });
                 }
                 
@@ -298,59 +288,54 @@ app.post('/webauthn/register/complete', (req, res) => {
                     credentialPublicKeyBase64 = Buffer.from(registrationInfo.credential.publicKey).toString('base64');
                 } catch (error) {
                     console.error('Error converting publicKey to base64:', error);
-                    con.query('DELETE FROM users WHERE email = ?', [email], (deleteErr) => {
-                        if (deleteErr) {
-                            console.error('Error deleting user after publicKey conversion error:', deleteErr);
-                        }
-                    });
+                    delete pendingRegistrations[email]; // Clean up pending registration
                     return res.status(400).json({ error: 'Registration failed: invalid public key' });
                 }
 
-                // Define the SQL query
-                const insertCredentialQuery = `UPDATE users SET credential = ?, public_key = ?,
-                                              credential_id = ?, counter = ? WHERE email = ?`;
+                // Define the SQL query to insert a new user with complete data
+                const insertUserQuery = `
+                    INSERT INTO users (email, user_id, credential, public_key, credential_id, counter, challenge) 
+                    VALUES (?, ?, ?, ?, ?, ?, NULL)
+                `;
                 
-                // Execute the SQL query to update the user's information
-                con.query(insertCredentialQuery, [
+                // Execute the SQL query to insert the user's complete information
+                con.query(insertUserQuery, [
+                    email,
+                    userId,
                     JSON.stringify(registrationInfo),
                     credentialPublicKeyBase64,
                     credentialIDBase64url, 
-                    initialCounter, 
-                    email
+                    initialCounter
                 ], (dbError) => {
                     // Handle any database errors during credential storage
                     if (dbError) {
-                        console.error('Error storing credential:', dbError);
+                        console.error('Error storing user:', dbError);
+                        delete pendingRegistrations[email]; // Clean up pending registration
                         return res.status(500).json({ error: 'Database error' });
                     }
+                    
+                    // Clean up pending registration after successful insert
+                    delete pendingRegistrations[email];
                     
                     // Send a success response to the client
                     res.json({ success: true });
                     
                     // Log the successful registration
-                    console.log(`Credential and public key saved for ${email}`);
+                    console.log(`User and credentials saved for ${email}`);
                 });
             } else {
-                // Handle the case where verification failed - delete the user
+                // Handle the case where verification failed
                 console.error('Registration verification failed');
-                con.query('DELETE FROM users WHERE email = ?', [email], (deleteErr) => {
-                    if (deleteErr) {
-                        console.error('Error deleting user after failed verification:', deleteErr);
-                    }
-                    return res.status(400).json({ error: 'Registration verification failed' });
-                });
+                delete pendingRegistrations[email]; // Clean up pending registration
+                return res.status(400).json({ error: 'Registration verification failed' });
             }
         } catch (verificationError) {
-            // Handle any errors that occurred during verification - delete the user
+            // Handle any errors that occurred during verification
             console.error('Verification error:', verificationError);
-            con.query('DELETE FROM users WHERE email = ?', [email], (deleteErr) => {
-                if (deleteErr) {
-                    console.error('Error deleting user after verification error:', deleteErr);
-                }
-                return res.status(400).json({ error: 'Verification error' });
-            });
+            delete pendingRegistrations[email]; // Clean up pending registration
+            return res.status(400).json({ error: 'Verification error' });
         }
-    });
+    })(); // Execute async IIFE
 });
 
 // Begin authentication
