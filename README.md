@@ -97,7 +97,7 @@ This project is configured for easy deployment to Heroku using the provided `Pro
 
 Heroku will automatically:
 - Detect Node.js project
-- Run `npm run heroku-postbuild` to build frontend and install backend dependencies
+- Run `npm run heroku-postbuild` to install frontend dependencies, build frontend, and install backend dependencies
 - Start the app using the command in `Procfile` (node Backend/Server.js)
 - Serve your application at your Heroku domain
 
@@ -109,7 +109,7 @@ Heroku will automatically:
 - `npm run deploy` - Build frontend and copy output into backend build folder
 - `npm run start-backend` - Explicitly start the backend from the Backend workspace
 - `npm run start:deployed-local` - Build/copy frontend, then start backend
-- `npm run heroku-postbuild` - Heroku build hook (frontend build + backend dependency install)
+- `npm run heroku-postbuild` - Heroku build hook (frontend dependency install + frontend build + backend dependency install)
 
 ### Environment Variables
 
