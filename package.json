@@ -4,11 +4,13 @@
   "description": "Webauthn Passkey authentication for Tic Tac Toe game",
   "main": "Backend/Server.js",
   "scripts": {
-    "start": "node Backend/Server.js",
-    "build": "cd Frontend && npm ci && npm run build && cd ..",
-    "heroku-postbuild": "npm run build && cd Backend && npm ci && cd ..",
-    "deploy": "npm run build",
-    "start-backend": "node Backend/Server.js"
+    "setup": "npm ci && npm --prefix Backend ci && npm --prefix Frontend ci",
+    "start": "npm run start-backend",
+    "build": "npm --prefix Frontend run build",
+    "deploy": "node build-and-deploy.js",
+    "start-backend": "npm --prefix Backend start",
+    "start:deployed-local": "npm run deploy && npm run start-backend",
+    "heroku-postbuild": "npm run build && npm --prefix Backend ci"
   },
   "engines": {
     "node": "20.x",

@@ -37,23 +37,19 @@ This is a full-stack application with:
 
 ### Local Development
 
-1. **Install root dependencies**:
+1. **Install all dependencies (one-time setup)**:
    ```bash
-   npm ci
+   npm run setup
    ```
 
-2. **Install Frontend dependencies** (in your IDE or terminal):
+2. **Run the frontend dev server** (in one terminal):
    ```bash
-   cd Frontend
-   npm ci
-   npm start
+   npm --prefix Frontend start
    ```
 
-3. **Install and run Backend** (in another terminal):
+3. **Run the backend server** (in another terminal):
    ```bash
-   cd Backend
-   npm ci
-   npm start
+   npm run start-backend
    ```
 
 The frontend will be available at `http://localhost:3000` and the backend API will be running on the port configured in `Backend/Server.js`.
@@ -62,20 +58,19 @@ The frontend will be available at `http://localhost:3000` and the backend API wi
 
 ### Building for Production
 
-To build the frontend and prepare for deployment:
-
+To build the frontend and copy the built assets to `Backend/build`:
 ```bash
 npm run deploy
 ```
 
-This command:
-1. Installs and builds the React frontend
-2. Copies the built frontend files to the backend `build/` directory
-3. The backend serves the frontend static files
-
-Alternatively, you can use the build-and-deploy.js script directly:
+To start the backend server (which serves the built frontend):
 ```bash
-node build-and-deploy.js
+npm run start-backend
+```
+
+To do both steps in one command:
+```bash
+npm run start:deployed-local
 ```
 
 ### Heroku Deployment
@@ -108,11 +103,13 @@ Heroku will automatically:
 
 #### Available NPM Scripts:
 
+- `npm run setup` - Install root, backend, and frontend dependencies
 - `npm start` - Start the backend server
-- `npm run build` - Build frontend and install dependencies
-- `npm run heroku-postbuild` - Heroku build hook (auto-executed during deployment)
-- `npm run deploy` - Local build and deployment preparation
-- `npm run start-backend` - Explicitly start the backend
+- `npm run build` - Build frontend only
+- `npm run deploy` - Build frontend and copy output into backend build folder
+- `npm run start-backend` - Explicitly start the backend from the Backend workspace
+- `npm run start:deployed-local` - Build/copy frontend, then start backend
+- `npm run heroku-postbuild` - Heroku build hook (frontend build + backend dependency install)
 
 ### Environment Variables
 
