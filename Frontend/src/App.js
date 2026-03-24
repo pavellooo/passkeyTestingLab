@@ -6,6 +6,7 @@ import Passkey from './component/passkey.js';
 import Board from './component/Board';
 import ProtectedRoute from './component/ProtectedRoute';
 import LandingPage from './component/LandingPage.js';
+import FlowInspectorPage from './component/FlowInspectorPage';
 
 // IMPORTANT: set axios defaults once
 axios.defaults.withCredentials = true;
@@ -89,6 +90,8 @@ function App() {
           />
         }
       />
+
+      <Route path="/flow-inspector" element={<FlowInspectorPage />} />
     </Routes>
   );
 }

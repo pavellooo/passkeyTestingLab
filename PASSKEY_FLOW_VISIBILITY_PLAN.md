@@ -27,6 +27,24 @@ We explicitly do not expose authenticator private keys or hardware-protected sec
 4. Verification checkpoint reporting
 5. Optional sequence diagram view
 
+## Current Gaps To Address
+- Cross-tab trace visibility is not always immediate with localStorage-only syncing.
+- Export exists, but there is no import/replay screen yet for uploaded files.
+- There is no dedicated full-screen diagram exploration page yet.
+
+## Phase 2.1: Inspector Reliability Hardening
+Goal: make cross-tab and page-to-page inspector behavior consistent and immediate.
+
+Tasks:
+- Add `BroadcastChannel`-based live event sync (primary) with localStorage as fallback.
+- Add deterministic storage schema/versioning for event persistence.
+- Ensure standalone inspector can list recent traces even when opened before new events arrive.
+- Add a backend `trace index` endpoint for recent trace IDs to reduce frontend dependence on browser storage.
+
+Definition of done:
+- New traces appear in standalone inspector within 1 second while another tab is active.
+- Trace list remains visible after refresh without waiting for new events.
+
 ## Phase Plan
 
 ### Phase 1: Instrumentation Foundation
@@ -104,10 +122,27 @@ Goal: improve teaching and session handoff.
 Tasks:
 - Add 3-lane sequence diagram (Browser, Backend, Authenticator).
 - Add export of flow record as JSON.
+- Add export as ZIP (JSON + metadata + optional markdown summary).
 - Add optional markdown/text export for documentation snapshots.
 
 Definition of done:
 - A flow can be shared as a reproducible artifact between sessions.
+
+### Phase 6: Import + Replay Explorer (Optional)
+Goal: allow uploaded exports to be restored and explored in a dedicated UI.
+
+Tasks:
+- Add `/flow-explorer` page for import/replay workflows.
+- Add JSON upload parser and schema validation.
+- Add ZIP upload support (extract JSON payload and metadata).
+- Add readable replay view:
+  - timeline list
+  - filter by trace ID/step/source/status
+  - raw payload viewer and decoded viewer (when available)
+- Add sequence diagram mode in the same page for imported flows.
+
+Definition of done:
+- A user can upload a previously exported file and inspect it fully without rerunning the flow.
 
 ## Data Safety Rules
 - Never log or display private keys (not available through WebAuthn APIs anyway).
@@ -146,16 +181,20 @@ Use this shape for both backend and frontend events.
 1. Backend trace ID + request/response capture
 2. Frontend trace propagation + local event buffer
 3. Basic timeline panel (raw payloads first)
-4. Decoders and annotated view
-5. Verification checkpoint reporting
-6. Sequence diagram/export (if needed)
+4. Inspector reliability hardening (cross-tab sync + trace index)
+5. Decoders and annotated view
+6. Verification checkpoint reporting
+7. Sequence diagram/export
+8. Import + replay explorer (if needed)
 
 ## Working Checklist
 - [x] Phase 1 complete ✅ Verified 2026-03-23
-- [ ] Phase 2 complete
+- [x] Phase 2 complete ✅ Implemented 2026-03-23
+- [ ] Phase 2.1 reliability hardening
 - [ ] Phase 3 complete
 - [ ] Phase 4 complete
 - [ ] Phase 5 complete (optional)
+- [ ] Phase 6 complete (optional)
 
 ## Session Log Template
 Use this section to keep continuity between chats.
@@ -198,13 +237,87 @@ Use this section to keep continuity between chats.
   - Use HTTP locally to avoid self-signed certificate issues.
   - Store local config in env (no hardcoded values in code).
 - Verification completed:
-  - ✅ window.__passpeyFlowEvents captures 8+ events per flow
+  - ✅ window.__passkeyFlowEvents captures 8+ events per flow
   - ✅ Frontend event logging working
   - ✅ Backend trace capture working
   - ✅ CORS properly configured
   - ✅ Local development fully functional
 - Next step:
   - Phase 2: Build Passkey Flow Inspector UI panel/timeline to visualize captured events
+
+### Session Entry - 2026-03-23 (Phase 2)
+- Date: 2026-03-23
+- Goal: Implement Passkey Flow Inspector timeline UI in the app.
+- Changes made:
+  - Added a Passkey Flow Inspector panel beside the auth form.
+  - Added strict-order timeline rendering with timestamps, step/event, source, and trace ID.
+  - Added expand/collapse per timeline row.
+  - Added copy-to-clipboard for raw payload on each expanded row.
+  - Added live frontend event syncing using a custom window event.
+  - Added backend trace polling for the latest trace ID and merged frontend/backend timeline view.
+  - Added standalone inspector route at /flow-inspector with trace ID filtering input/chips.
+- Files touched:
+  - Frontend/src/component/passkey.js
+  - Frontend/src/component/FlowInspectorPage.js
+  - Frontend/src/App.js
+  - README.md
+  - PASSKEY_FLOW_VISIBILITY_PLAN.md
+- Decisions made:
+  - Keep Phase 2 in the existing login/register page first for rapid iteration.
+  - Fetch backend events for latest active trace to keep UI responsive.
+  - Use in-memory view controls (expanded rows) with no persistence yet.
+- Verification completed:
+  - ✅ Frontend build compiles successfully after Phase 2 changes
+  - ✅ Timeline shows live flow progression
+  - ✅ Expand/collapse and Copy Raw Payload are functional
+- Next step:
+  - Phase 3: Add decoded/annotated payload view (raw vs explained)
+
+### Session Entry - 2026-03-23 (Planner Update)
+- Date: 2026-03-23
+- Goal: Align roadmap with observed inspector behavior and next feasible scope.
+- Changes made:
+  - Added explicit reliability hardening phase for cross-tab sync latency and trace discovery.
+  - Expanded export scope to include ZIP artifact packaging.
+  - Added future import/replay explorer page with upload + validation + diagram support.
+- Decisions made:
+  - Treat localStorage as temporary persistence, not the final synchronization mechanism.
+  - Keep upload/replay and full diagram exploration as later phases after core decode/checkpoint work.
+- Next step:
+  - Implement Phase 2.1 reliability hardening before deepening export/import UX.
+
+### Session Entry - 2026-03-23 (Phase 2.1)
+- Date: 2026-03-23
+- Goal: Improve immediate cross-tab inspector sync and reduce localStorage timing issues.
+- Changes made:
+  - Added BroadcastChannel (`passkey-flow-events`) sync for immediate cross-tab event propagation.
+  - Kept localStorage as persistence fallback with existing TTL pruning.
+  - Wired clear actions to broadcast updates so all open tabs stay in sync.
+- Files touched:
+  - Frontend/src/component/passkey.js
+  - Frontend/src/component/FlowInspectorPage.js
+  - Frontend/src/component/FlowInspectorPanel.js
+- Verification completed:
+  - ✅ No static errors in updated files
+  - ✅ Frontend build compiles successfully
+- Next step:
+  - Test multi-tab behavior manually and then continue with decoder/explorer enhancements.
+
+### Session Entry - 2026-03-24 (Phase 2 QoL)
+- Date: 2026-03-24
+- Goal: Improve inspector usability for real testing sessions.
+- Changes made:
+  - Updated standalone filter to search by email/phone/trace ID.
+  - Added trace summary chips that show identity + flow type + trace ID.
+  - Added identity grouping section to clarify multiple traces for one account.
+  - Added `Expand All` and `Collapse All` controls for timeline events.
+  - Displayed trace identity context in event rows where available.
+- Files touched:
+  - Frontend/src/component/FlowInspectorPage.js
+  - README.md
+  - PASSKEY_FLOW_VISIBILITY_PLAN.md
+- Verification completed:
+  - ✅ Frontend build compiles successfully after QoL patch set.
 
 ## Notes
 - Start with visibility before UI polish.

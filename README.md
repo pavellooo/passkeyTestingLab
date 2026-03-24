@@ -6,6 +6,19 @@ A web application exploring the WebAuthn passkey authentication flow integrated 
 
 This project includes a **passkey playground** feature that captures and exposes all passkey-related traffic so you can inspect the complete WebAuthn flow in real time (except for cryptographic secrets, which remain protected by hardware or 3rd-party authenticators like Google Password Manager).
 
+Use the standalone inspector URL during local development:
+- `http://localhost:3000/flow-inspector`
+
+The inspector supports filtering by trace ID so you can focus on a single registration/authentication flow.
+
+Inspector data retention and controls:
+- Trace events auto-expire after 5 minutes.
+- Standalone inspector provides `Export JSON` to download all currently visible data.
+- Standalone inspector provides `Clear All Traces` to wipe stored local trace data.
+- Standalone inspector supports filtering by email/phone/trace ID while still showing trace IDs.
+- Standalone inspector includes `Expand All` and `Collapse All` timeline controls.
+- Trace grouping by identity helps show separate registration/authentication traces for the same account.
+
 For details on the planning and current status of the project, see [PASSKEY_FLOW_VISIBILITY_PLAN.md](PASSKEY_FLOW_VISIBILITY_PLAN.md).
 
 ## Deployment Status
@@ -47,7 +60,7 @@ This is a full-stack application with:
    ```
 
 2. **Configure Frontend API URL** (one-time setup):
-   Copy or create `Frontend/.env` from the example:
+   Copy or create `Frontend/.env` from the example (.env.example):
    ```bash
    cp Frontend/.env.example Frontend/.env
    ```
@@ -67,6 +80,10 @@ This is a full-stack application with:
    npm run start-backend
    ```
    Backend will be available at `http://localhost:5200`
+
+5. **Open the standalone flow inspector** (optional but recommended):
+   - `http://localhost:3000/flow-inspector`
+   - Select or paste a trace ID to filter events for one flow.
 
 ### Local Configuration
 

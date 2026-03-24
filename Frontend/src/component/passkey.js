@@ -1,10 +1,87 @@
-import React, { useState} from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios';
 
 const apiBase = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/$/, '');
 const apiUrl = (path) => `${apiBase}${path}`;
 const MAX_CLIENT_FLOW_EVENTS = 300;
+const FLOW_EVENT_UPDATED = 'passkey-flow-updated';
+const FLOW_EVENTS_STORAGE_KEY = 'passkeyFlowEvents';
+const FLOW_EVENTS_TTL_MS = 5 * 60 * 1000;
+const FLOW_EVENTS_CHANNEL_NAME = 'passkey-flow-events';
+
+let flowEventsChannel;
+
+const getFlowEventsChannel = () => {
+  if (typeof window === 'undefined' || !('BroadcastChannel' in window)) {
+    return null;
+  }
+
+  if (!flowEventsChannel) {
+    flowEventsChannel = new BroadcastChannel(FLOW_EVENTS_CHANNEL_NAME);
+  }
+
+  return flowEventsChannel;
+};
+
+const broadcastFlowEvents = (events) => {
+  const channel = getFlowEventsChannel();
+  if (!channel) {
+    return;
+  }
+
+  channel.postMessage({
+    type: 'flow-events-updated',
+    events,
+    sentAt: new Date().toISOString(),
+  });
+};
+
+const pruneExpiredFlowEvents = (events) => {
+  const cutoff = Date.now() - FLOW_EVENTS_TTL_MS;
+  return (events || []).filter((event) => {
+    const timestamp = new Date(event?.timestamp || 0).getTime();
+    if (Number.isNaN(timestamp)) {
+      return false;
+    }
+    return timestamp >= cutoff;
+  });
+};
+
+const loadPersistedFlowEvents = () => {
+  try {
+    const raw = window.localStorage.getItem(FLOW_EVENTS_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return pruneExpiredFlowEvents(parsed);
+    }
+
+    if (parsed && Array.isArray(parsed.events)) {
+      return pruneExpiredFlowEvents(parsed.events);
+    }
+
+    return [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const persistFlowEvents = (events) => {
+  try {
+    const pruned = pruneExpiredFlowEvents(events);
+    window.localStorage.setItem(FLOW_EVENTS_STORAGE_KEY, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      ttlMs: FLOW_EVENTS_TTL_MS,
+      events: pruned,
+    }));
+  } catch (error) {
+    // Ignore localStorage write failures in private or restricted contexts.
+  }
+};
 
 const createTraceId = (flowType) => {
   const randomPart = Math.random().toString(36).slice(2, 10);
@@ -54,8 +131,10 @@ const sanitizePayload = (value, seen = new WeakSet()) => {
 
 const pushClientFlowEvent = (event) => {
   if (!window.__passkeyFlowEvents) {
-    window.__passkeyFlowEvents = [];
+    window.__passkeyFlowEvents = loadPersistedFlowEvents();
   }
+
+  window.__passkeyFlowEvents = pruneExpiredFlowEvents(window.__passkeyFlowEvents);
 
   window.__passkeyFlowEvents.push({
     timestamp: new Date().toISOString(),
@@ -67,6 +146,11 @@ const pushClientFlowEvent = (event) => {
       window.__passkeyFlowEvents.length - MAX_CLIENT_FLOW_EVENTS
     );
   }
+
+  persistFlowEvents(window.__passkeyFlowEvents);
+
+  window.dispatchEvent(new Event(FLOW_EVENT_UPDATED));
+  broadcastFlowEvents(window.__passkeyFlowEvents);
 };
 
 const logClientFlowEvent = (event) => {
@@ -216,7 +300,7 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
       // More detailed error handling
       if (error.response) {
         // Server responded with error
-        setError('Server error: ' + error.response.data?.error || error.message);
+        setError(`Server error: ${error.response.data?.error || error.message}`);
       } else if (error.request) {
         // Request made but no response
         setError(`Network Error: Backend not responding. Check REACT_APP_API_BASE_URL or backend availability at ${apiUrl('') || window.location.origin}`);
@@ -339,7 +423,7 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
         setIsAuthenticated(true); //update authentication state
         navigate('/tictactoe', { state: { username: email } }); // Redirect to Tic Tac Toe on success
       } else {
-        setError('Authentication failed: ' + response.data.message || 'Unknown error');
+        setError(`Authentication failed: ${response.data.message || 'Unknown error'}`);
       }
 
       window.alert('Authentication successful');
@@ -358,26 +442,31 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
           response: error.response?.data,
         },
       });
-      setError('Authentication failed: ' + error.message);
+      if (error.response?.data?.error) {
+        setError(`Authentication failed: ${error.response.data.error}`);
+      } else {
+        setError(`Authentication failed: ${error.message}`);
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div style={{ 
-      textAlign: "center", 
-      marginTop: "50px",
-      maxWidth: "450px",
-      margin: "50px auto",
-      padding: "20px",
-      borderRadius: "8px",
-      boxShadow: "0 2px 10px rgba(0, 0, 0, 0.1)"
+    <div style={{
+      textAlign: 'center',
+      marginTop: '50px',
+      maxWidth: '450px',
+      margin: '50px auto',
+      padding: '20px',
+      borderRadius: '8px',
+      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
+      background: '#fff',
     }}>
-      <h1>{isLoginView ? "Login" : "Register"}</h1>
-      
-      <div style={{ marginBottom: "20px" }}>
-        <label style={{ display: "block", textAlign: "left", marginBottom: "8px" }}>
+      <h1>{isLoginView ? 'Login' : 'Register'}</h1>
+
+      <div style={{ marginBottom: '20px' }}>
+        <label style={{ display: 'block', textAlign: 'left', marginBottom: '8px' }}>
           Email or phone number
         </label>
         <input
@@ -385,56 +474,92 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
           placeholder="example@email.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={{ 
-            width: "100%", 
-            padding: "12px", 
-            borderRadius: "4px",
-            border: "1px solid #ccc",
-            fontSize: "16px",
-            boxSizing: "border-box"
+          style={{
+            width: '100%',
+            padding: '12px',
+            borderRadius: '4px',
+            border: '1px solid #ccc',
+            fontSize: '16px',
+            boxSizing: 'border-box',
           }}
         />
       </div>
-      
-      {error && <p style={{color:'red', marginBottom: "15px"}}>{error}</p>}
-      
-      <button 
-        onClick={isLoginView ? handleAuthenticate : handleRegister} 
+
+      {error && <p style={{ color: 'red', marginBottom: '15px' }}>{error}</p>}
+
+      <button
+        onClick={isLoginView ? handleAuthenticate : handleRegister}
         disabled={isLoading}
-        style={{ 
-          width: "100%",
-          padding: "12px", 
-          background: isLoginView ? "#1a1a1a" : "#1a1a1a", 
-          color: "white",
-          border: "none",
-          borderRadius: "4px",
-          fontSize: "16px",
-          cursor: "pointer",
-          marginBottom: "15px"
+        style={{
+          width: '100%',
+          padding: '12px',
+          background: '#1a1a1a',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          fontSize: '16px',
+          cursor: 'pointer',
+          marginBottom: '15px',
         }}
       >
-        {isLoading ? "Processing..." : "Continue"}
+        {isLoading ? 'Processing...' : 'Continue'}
       </button>
-      
-      <div style={{ marginTop: "20px" }}>
+
+      <button
+        type="button"
+        onClick={() => window.open('/flow-inspector', '_blank', 'noopener,noreferrer')}
+        style={{
+          width: '100%',
+          padding: '10px',
+          border: '1px solid #d0d0d0',
+          background: '#fff',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          marginBottom: '10px',
+        }}
+      >
+        Open Flow Inspector
+      </button>
+
+      <button
+        type="button"
+        onClick={() => navigate('/')}
+        style={{
+          width: '100%',
+          padding: '10px',
+          border: '1px solid #d0d0d0',
+          background: '#fff',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          marginBottom: '10px',
+        }}
+      >
+        Back To Landing Page
+      </button>
+
+      <div style={{ marginTop: '20px' }}>
         {isLoginView ? (
-          <p>Don't have an account? <span 
-            onClick={() => setIsLoginView(false)} 
-            style={{color: "#007bff", cursor: "pointer", textDecoration: "underline"}}
-          >
-            Register here.
-          </span></p>
+          <p>
+            Don't have an account?{' '}
+            <span
+              onClick={() => setIsLoginView(false)}
+              style={{ color: '#007bff', cursor: 'pointer', textDecoration: 'underline' }}
+            >
+              Register here.
+            </span>
+          </p>
         ) : (
-          <p>Already have an account? <span 
-            onClick={() => setIsLoginView(true)} 
-            style={{color: "#007bff", cursor: "pointer", textDecoration: "underline"}}
-          >
-            Login here.
-          </span></p>
+          <p>
+            Already have an account?{' '}
+            <span
+              onClick={() => setIsLoginView(true)}
+              style={{ color: '#007bff', cursor: 'pointer', textDecoration: 'underline' }}
+            >
+              Login here.
+            </span>
+          </p>
         )}
       </div>
-      
-      
     </div>
   );
 }
