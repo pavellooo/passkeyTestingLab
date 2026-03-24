@@ -2,11 +2,15 @@
 
 A web application exploring the WebAuthn passkey authentication flow integrated with a Tic Tac Toe game. This project demonstrates secure, passwordless authentication using the FIDO2 standard.
 
-It is currently deployed using Heroku at the following URL:
-https://passkey-tictactoe-spa-f5b6f75d5241.herokuapp.com
+## Passkey Visibility Playground
 
-Shortened URL:
-https://tinyurl.com/TTTSPA
+This project includes a **passkey playground** feature that captures and exposes all passkey-related traffic so you can inspect the complete WebAuthn flow in real time (except for cryptographic secrets, which remain protected by hardware or 3rd-party authenticators like Google Password Manager).
+
+For details on the planning and current status of the project, see [PASSKEY_FLOW_VISIBILITY_PLAN.md](PASSKEY_FLOW_VISIBILITY_PLAN.md).
+
+## Deployment Status
+
+Currently in local development. Heroku deployment will be configured once database addon is set up.
 
 ## Project Overview
 
@@ -42,17 +46,61 @@ This is a full-stack application with:
    npm run setup
    ```
 
-2. **Run the frontend dev server** (in one terminal):
+2. **Configure Frontend API URL** (one-time setup):
+   Copy or create `Frontend/.env` from the example:
+   ```bash
+   cp Frontend/.env.example Frontend/.env
+   ```
+   Or manually create `Frontend/.env`:
+   ```bash
+   REACT_APP_API_BASE_URL=http://localhost:5200
+   ```
+
+3. **Run the frontend dev server** (in one terminal):
    ```bash
    npm --prefix Frontend start
    ```
+   Frontend will be available at `http://localhost:3000`
 
-3. **Run the backend server** (in another terminal):
+4. **Run the backend server** (in another terminal):
    ```bash
    npm run start-backend
    ```
+   Backend will be available at `http://localhost:5200`
 
-The frontend will be available at `http://localhost:3000` and the backend API will be running on the port configured in `Backend/Server.js`.
+### Local Configuration
+
+The local setup uses HTTP (not HTTPS) to avoid self-signed certificate issues. Key values in `Backend/.env` for local dev:
+
+```bash
+NODE_ENV=development
+EXPECTED_ORIGIN=http://localhost:3000
+EXPECTED_RP_ID=localhost
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=Hashtag@123
+DB_NAME=webauthn_passkey
+PORT=5200
+```
+
+Do not use the production Heroku values locally; the commented section in `Backend/.env` shows those for reference only.
+
+### Local Troubleshooting
+
+If backend startup fails with `EADDRINUSE: address already in use :::5200`, another process is already using port 5200.
+
+On Windows, find and stop the process:
+
+```bash
+netstat -ano | findstr :5200
+taskkill /PID <PID_FROM_NETSTAT> /F
+```
+
+Or run the backend on another port by setting `PORT` in `Backend/.env`, for example:
+
+```bash
+PORT=5300
+```
 
 ## Build and Deployment
 
@@ -203,6 +251,40 @@ certs/
 ## Database Setup
 
 Refer to [Setup references/MYSQL_SETUP.md](Setup%20references/MYSQL_SETUP.md) for MySQL database configuration and schema setup.
+
+### Quick Local MySQL Setup (Windows)
+
+Use this quick flow if you are setting up local development from scratch.
+
+1. Start your MySQL server.
+2. Open a terminal and connect as root:
+   ```bash
+   mysql -u root -p
+   ```
+3. Create the local database and app user (example values):
+   ```sql
+   CREATE DATABASE webauthn_passkey;
+   CREATE USER 'pp_user'@'localhost' IDENTIFIED BY 'your_strong_password';
+   GRANT ALL PRIVILEGES ON webauthn_passkey.* TO 'pp_user'@'localhost';
+   FLUSH PRIVILEGES;
+   ```
+4. Import schema from the project root:
+   ```bash
+   mysql -u pp_user -p webauthn_passkey < "Setup references/database_setup.sql"
+   ```
+5. Set matching values in `Backend/.env`:
+   ```bash
+   DB_HOST=localhost
+   DB_USER=pp_user
+   DB_PASSWORD=your_strong_password
+   DB_NAME=webauthn_passkey
+   ```
+6. Start backend again:
+   ```bash
+   npm run start-backend
+   ```
+
+For more detail, keep using [Setup references/MYSQL_SETUP.md](Setup%20references/MYSQL_SETUP.md).
 
 ## Technology Stack
 

@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -20,10 +20,109 @@ const port = process.env.PORT || 5200;
 const isProduction = process.env.NODE_ENV === 'production';
 
 // Load JWT keys from environment variables
-const privateKey = process.env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n');
-const publicKey = process.env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n');
+const readRequiredMultilineEnv = (envName) => {
+    const value = process.env[envName];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${envName}. Ensure Backend/.env is configured.`);
+    }
+    return value.replace(/\\n/g, '\n');
+};
+
+const privateKey = readRequiredMultilineEnv('JWT_PRIVATE_KEY');
+const publicKey = readRequiredMultilineEnv('JWT_PUBLIC_KEY');
 
 const app = express();
+
+const flowTraceStore = new Map();
+const MAX_TRACES = 200;
+const MAX_EVENTS_PER_TRACE = 120;
+
+const generateServerTraceId = () => `srv-${Date.now().toString(36)}-${crypto.randomBytes(6).toString('hex')}`;
+
+const sanitizeForTrace = (value, seen = new WeakSet()) => {
+    if (value === null || value === undefined) {
+        return value;
+    }
+
+    if (typeof value === 'function') {
+        return '[Function]';
+    }
+
+    if (typeof value === 'string') {
+        return value.length > 2000 ? `${value.slice(0, 2000)}...[truncated]` : value;
+    }
+
+    if (typeof value !== 'object') {
+        return value;
+    }
+
+    if (seen.has(value)) {
+        return '[Circular]';
+    }
+
+    if (Buffer.isBuffer(value)) {
+        return `[Buffer:${value.length}]`;
+    }
+
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+        const size = value.byteLength || value.length || 0;
+        return `[Binary:${size}]`;
+    }
+
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+        return value.map((entry) => sanitizeForTrace(entry, seen));
+    }
+
+    const sanitized = {};
+    Object.keys(value).forEach((key) => {
+        const lowered = key.toLowerCase();
+        if (lowered.includes('token') || lowered.includes('cookie') || lowered.includes('authorization')) {
+            sanitized[key] = '[MASKED]';
+            return;
+        }
+        sanitized[key] = sanitizeForTrace(value[key], seen);
+    });
+
+    return sanitized;
+};
+
+const trimTraceStoreIfNeeded = () => {
+    if (flowTraceStore.size <= MAX_TRACES) {
+        return;
+    }
+
+    const oldestKey = flowTraceStore.keys().next().value;
+    if (oldestKey) {
+        flowTraceStore.delete(oldestKey);
+    }
+};
+
+const recordTraceEvent = (traceId, event) => {
+    if (!traceId) {
+        return;
+    }
+
+    if (!flowTraceStore.has(traceId)) {
+        flowTraceStore.set(traceId, {
+            traceId,
+            createdAt: new Date().toISOString(),
+            events: []
+        });
+        trimTraceStoreIfNeeded();
+    }
+
+    const trace = flowTraceStore.get(traceId);
+    trace.events.push({
+        timestamp: new Date().toISOString(),
+        ...event
+    });
+
+    if (trace.events.length > MAX_EVENTS_PER_TRACE) {
+        trace.events = trace.events.slice(trace.events.length - MAX_EVENTS_PER_TRACE);
+    }
+};
 
 // Trust proxy - required for Heroku to get real IP addresses
 app.set('trust proxy', 1);
@@ -32,11 +131,63 @@ app.set('trust proxy', 1);
 app.use(cors({
     origin: isProduction 
         ? process.env.FRONTEND_URL || true
-        : 'https://localhost:5200',
+        : ['http://localhost:3000', 'https://localhost:3000'],
     credentials: true
 })); // use credentials for cookies
 app.use(bodyParser.json());
 app.use(cookieParser());
+
+app.use('/webauthn', (req, res, next) => {
+    const providedTraceId = req.headers['x-passkey-trace-id'];
+    const traceId = typeof providedTraceId === 'string' && providedTraceId.trim().length > 0
+        ? providedTraceId.trim()
+        : generateServerTraceId();
+
+    req.traceId = traceId;
+    res.setHeader('x-passkey-trace-id', traceId);
+
+    recordTraceEvent(traceId, {
+        source: 'backend',
+        direction: 'inbound',
+        step: 'http.request',
+        endpoint: req.originalUrl,
+        method: req.method,
+        payloadRaw: sanitizeForTrace(req.body)
+    });
+
+    const originalJson = res.json.bind(res);
+    const originalSend = res.send.bind(res);
+    let responseCaptured = false;
+
+    const captureResponse = (body) => {
+        if (responseCaptured) {
+            return;
+        }
+
+        responseCaptured = true;
+        recordTraceEvent(traceId, {
+            source: 'backend',
+            direction: 'outbound',
+            step: 'http.response',
+            endpoint: req.originalUrl,
+            method: req.method,
+            statusCode: res.statusCode,
+            payloadRaw: sanitizeForTrace(body)
+        });
+    };
+
+    res.json = (body) => {
+        captureResponse(body);
+        return originalJson(body);
+    };
+
+    res.send = (body) => {
+        captureResponse(body);
+        return originalSend(body);
+    };
+
+    next();
+});
 
 // Rate limiting middleware
 const generalLimiter = rateLimit({
@@ -147,6 +298,14 @@ const expectedRPID = process.env.EXPECTED_RP_ID ||
 app.post('/webauthn/register', authLimiter, (req, res) => {
     const { email } = req.body;
 
+    recordTraceEvent(req.traceId, {
+        source: 'backend',
+        direction: 'internal',
+        step: 'registration.start',
+        endpoint: '/webauthn/register',
+        payloadRaw: sanitizeForTrace({ email })
+    });
+
     // Validate email input
     const { error, value } = emailSchema.validate({ email });
     if (error) {
@@ -187,6 +346,7 @@ app.post('/webauthn/register', authLimiter, (req, res) => {
         pendingRegistrations[validatedEmail] = {
             userId,
             challenge,
+            traceId: req.traceId,
             timestamp: Date.now()
         };
 
@@ -245,6 +405,14 @@ app.post('/webauthn/register/complete', (req, res) => {
     const { challenge: storedChallenge, userId } = pendingReg;
     const parsedCredential = credential;
 
+    recordTraceEvent(req.traceId || pendingReg.traceId, {
+        source: 'backend',
+        direction: 'internal',
+        step: 'registration.complete.received',
+        endpoint: '/webauthn/register/complete',
+        payloadRaw: sanitizeForTrace({ email, hasCredential: Boolean(credential), userId })
+    });
+
     // Use async IIFE to handle verification
     (async () => {
         try {
@@ -257,6 +425,14 @@ app.post('/webauthn/register/complete', (req, res) => {
 
             // Extract the verification result and registration information
             const { verified, registrationInfo } = verification;
+
+            recordTraceEvent(req.traceId || pendingReg.traceId, {
+                source: 'backend',
+                direction: 'internal',
+                step: 'registration.verify.result',
+                endpoint: '/webauthn/register/complete',
+                payloadRaw: sanitizeForTrace({ verified, hasRegistrationInfo: Boolean(registrationInfo) })
+            });
             
             if (verified && registrationInfo) {
                 // Debug the registration info structure
@@ -342,6 +518,14 @@ app.post('/webauthn/register/complete', (req, res) => {
 app.post('/webauthn/authenticate', authLimiter, (req, res) => {
     const { email } = req.body;
 
+    recordTraceEvent(req.traceId, {
+        source: 'backend',
+        direction: 'internal',
+        step: 'authentication.start',
+        endpoint: '/webauthn/authenticate',
+        payloadRaw: sanitizeForTrace({ email })
+    });
+
     // Validate email input
     const { error, value } = emailSchema.validate({ email });
     if (error) {
@@ -400,6 +584,14 @@ app.post('/webauthn/authenticate', authLimiter, (req, res) => {
 
 app.post('/webauthn/authenticate/complete', (req, res) => {
     const { email, assertion } = req.body;
+
+    recordTraceEvent(req.traceId, {
+        source: 'backend',
+        direction: 'internal',
+        step: 'authentication.complete.received',
+        endpoint: '/webauthn/authenticate/complete',
+        payloadRaw: sanitizeForTrace({ email, hasAssertion: Boolean(assertion) })
+    });
 
     if (!email || !assertion) {
         return res.status(400).json({ error: 'Invalid request' });
@@ -479,6 +671,17 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
                     counter: storedCounter
                 },
                 requireUserVerification: true,
+            });
+
+            recordTraceEvent(req.traceId, {
+                source: 'backend',
+                direction: 'internal',
+                step: 'authentication.verify.result',
+                endpoint: '/webauthn/authenticate/complete',
+                payloadRaw: sanitizeForTrace({
+                    verified: verification.verified,
+                    newCounter: verification.authenticationInfo?.newCounter
+                })
             });
             
             console.log('Library verification successful:', JSON.stringify(verification, null, 2));
@@ -597,6 +800,17 @@ app.post('/webauthn/logout', (req, res) => {
     res.json({ success: true, message: 'Logged out successfully' });
 });
 
+app.get('/webauthn/trace/:traceId', (req, res) => {
+    const { traceId } = req.params;
+    const trace = flowTraceStore.get(traceId);
+
+    if (!trace) {
+        return res.status(404).json({ error: 'Trace not found' });
+    }
+
+    return res.json(trace);
+});
+
 // Backwards-compatible logout route
 app.post('/logout', (req, res) => {
     clearAuthCookies(res);
@@ -625,31 +839,12 @@ if (isProduction) {
         console.log(`📍 Expected origin: ${expectedOrigin}`);
     });
 } else {
-    // Local development with self-signed certificates
-    try {
-        const sslCertPath = process.env.SSL_CERT_PATH || path.join(__dirname, 'certs', 'server.crt');
-        const sslKeyPath = process.env.SSL_KEY_PATH || path.join(__dirname, 'certs', 'server.key');
-        
-        const certificate = fs.readFileSync(sslCertPath);
-        const certPrivateKey = fs.readFileSync(sslKeyPath);
-        
-        const httpsOptions = {
-            key: certPrivateKey,
-            cert: certificate
-        };
-        
-        server = https.createServer(httpsOptions, app);
-        server.listen(port, () => {
-            console.log(`🔧 Development HTTPS server running on https://localhost:${port}`);
-            console.log(`📍 Expected origin: ${expectedOrigin}`);
-        });
-    } catch (error) {
-        console.error('Error loading SSL certificates:', error.message);
-        console.error('Make sure certificate files exist at:');
-        console.error(`  Certificate: ${path.join(__dirname, 'certs', 'server.crt')}`);
-        console.error(`  Key: ${path.join(__dirname, 'certs', 'server.key')}`);
-        process.exit(1);
-    }
+    // Local development - use HTTP to avoid self-signed cert issues
+    server = http.createServer(app);
+    server.listen(port, () => {
+        console.log(`🔧 Development HTTP server running on http://localhost:${port}`);
+        console.log(`📍 Expected origin: ${expectedOrigin}`);
+    });
 }
 
 module.exports = server;

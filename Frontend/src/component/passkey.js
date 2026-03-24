@@ -4,6 +4,81 @@ import axios from 'axios';
 
 const apiBase = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/$/, '');
 const apiUrl = (path) => `${apiBase}${path}`;
+const MAX_CLIENT_FLOW_EVENTS = 300;
+
+const createTraceId = (flowType) => {
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${flowType}-${Date.now().toString(36)}-${randomPart}`;
+};
+
+const sanitizePayload = (value, seen = new WeakSet()) => {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return value.length > 2000 ? `${value.slice(0, 2000)}...[truncated]` : value;
+  }
+
+  if (typeof value !== 'object') {
+    return value;
+  }
+
+  if (seen.has(value)) {
+    return '[Circular]';
+  }
+
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    const size = value.byteLength || value.length || 0;
+    return `[Binary:${size}]`;
+  }
+
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizePayload(entry, seen));
+  }
+
+  const sanitized = {};
+  Object.keys(value).forEach((key) => {
+    const lowered = key.toLowerCase();
+    if (lowered.includes('token') || lowered.includes('cookie') || lowered.includes('authorization')) {
+      sanitized[key] = '[MASKED]';
+      return;
+    }
+    sanitized[key] = sanitizePayload(value[key], seen);
+  });
+
+  return sanitized;
+};
+
+const pushClientFlowEvent = (event) => {
+  if (!window.__passkeyFlowEvents) {
+    window.__passkeyFlowEvents = [];
+  }
+
+  window.__passkeyFlowEvents.push({
+    timestamp: new Date().toISOString(),
+    ...event,
+  });
+
+  if (window.__passkeyFlowEvents.length > MAX_CLIENT_FLOW_EVENTS) {
+    window.__passkeyFlowEvents = window.__passkeyFlowEvents.slice(
+      window.__passkeyFlowEvents.length - MAX_CLIENT_FLOW_EVENTS
+    );
+  }
+};
+
+const logClientFlowEvent = (event) => {
+  const normalizedEvent = {
+    source: 'frontend',
+    ...event,
+    payloadRaw: sanitizePayload(event.payloadRaw),
+  };
+
+  pushClientFlowEvent(normalizedEvent);
+  console.log('[PasskeyFlow]', normalizedEvent);
+};
 
 function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuthenticated and setUserEmail as props
   const [email, setEmail] = useState('');
@@ -35,6 +110,14 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
 
     setError('');
     setIsLoading(true);
+    const traceId = createTraceId('registration');
+    logClientFlowEvent({
+      traceId,
+      flowType: 'registration',
+      step: 'registration.start',
+      direction: 'internal',
+      payloadRaw: { email },
+    });
     
     try {
       console.log('Attempting to register with:', email);
@@ -43,7 +126,21 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
       const { data: publicKeyCredentialCreationOptions } = await axios.post(
         apiUrl('/webauthn/register'), 
         { email },
+        {
+          headers: {
+            'x-passkey-trace-id': traceId,
+          },
+        }
       );
+
+      logClientFlowEvent({
+        traceId,
+        flowType: 'registration',
+        step: 'registration.options.received',
+        direction: 'inbound',
+        endpoint: '/webauthn/register',
+        payloadRaw: publicKeyCredentialCreationOptions,
+      });
 
       const publicKeyCredentialCreationOptionsParsed = {
         challenge: base64UrlToUint8Array(publicKeyCredentialCreationOptions.challenge),
@@ -62,10 +159,36 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
         publicKey: publicKeyCredentialCreationOptionsParsed,
       });
 
+      logClientFlowEvent({
+        traceId,
+        flowType: 'registration',
+        step: 'browser.create.completed',
+        direction: 'internal',
+        endpoint: 'navigator.credentials.create',
+        payloadRaw: {
+          id: credential?.id,
+          type: credential?.type,
+          hasResponse: Boolean(credential?.response),
+        },
+      });
+
       await axios.post(apiUrl('/webauthn/register/complete'), {
         email,
         credential,
         
+      }, {
+        headers: {
+          'x-passkey-trace-id': traceId,
+        },
+      });
+
+      logClientFlowEvent({
+        traceId,
+        flowType: 'registration',
+        step: 'registration.complete.sent',
+        direction: 'outbound',
+        endpoint: '/webauthn/register/complete',
+        payloadRaw: { email, credentialId: credential?.id },
       });
 
       window.alert('Registration successful');
@@ -77,6 +200,18 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
       console.error('Error response:', error.response);
       console.error('Error request:', error.request);
       console.error('Error message:', error.message);
+
+      logClientFlowEvent({
+        traceId,
+        flowType: 'registration',
+        step: 'registration.error',
+        direction: 'internal',
+        status: 'error',
+        payloadRaw: {
+          message: error.message,
+          response: error.response?.data,
+        },
+      });
       
       // More detailed error handling
       if (error.response) {
@@ -101,13 +236,36 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
 
     setIsLoading(true);
     setError('');
+    const traceId = createTraceId('authentication');
+
+    logClientFlowEvent({
+      traceId,
+      flowType: 'authentication',
+      step: 'authentication.start',
+      direction: 'internal',
+      payloadRaw: { email },
+    });
     
     try {
       const { data: publicKeyCredentialRequestOptions } = await axios.post(
         apiUrl('/webauthn/authenticate'),
         { email },
-        { withCredentials: true }
+        {
+          withCredentials: true,
+          headers: {
+            'x-passkey-trace-id': traceId,
+          },
+        }
       );
+
+      logClientFlowEvent({
+        traceId,
+        flowType: 'authentication',
+        step: 'authentication.options.received',
+        direction: 'inbound',
+        endpoint: '/webauthn/authenticate',
+        payloadRaw: publicKeyCredentialRequestOptions,
+      });
 
       const publicKeyCredentialRequestOptionsParsed = {
         challenge: base64UrlToUint8Array(publicKeyCredentialRequestOptions.challenge),
@@ -121,6 +279,19 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
 
       const assertion = await navigator.credentials.get({ 
         publicKey: publicKeyCredentialRequestOptionsParsed 
+      });
+
+      logClientFlowEvent({
+        traceId,
+        flowType: 'authentication',
+        step: 'browser.get.completed',
+        direction: 'internal',
+        endpoint: 'navigator.credentials.get',
+        payloadRaw: {
+          id: assertion?.id,
+          type: assertion?.type,
+          hasResponse: Boolean(assertion?.response),
+        },
       });
 
       const assertionResponse = {
@@ -140,7 +311,21 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
       const response = await axios.post(apiUrl('/webauthn/authenticate/complete'), {
         email,
         assertion: assertionResponse,
-      }, { withCredentials: true });
+      }, {
+        withCredentials: true,
+        headers: {
+          'x-passkey-trace-id': traceId,
+        },
+      });
+
+      logClientFlowEvent({
+        traceId,
+        flowType: 'authentication',
+        step: 'authentication.complete.response',
+        direction: 'inbound',
+        endpoint: '/webauthn/authenticate/complete',
+        payloadRaw: response.data,
+      });
 
       if (response.data.success) {
         // Store the token in a secure cookie for session persistence
@@ -162,6 +347,17 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
 
     } catch (error) {
       console.error('Authentication failed:', error);
+      logClientFlowEvent({
+        traceId,
+        flowType: 'authentication',
+        step: 'authentication.error',
+        direction: 'internal',
+        status: 'error',
+        payloadRaw: {
+          message: error.message,
+          response: error.response?.data,
+        },
+      });
       setError('Authentication failed: ' + error.message);
     } finally {
       setIsLoading(false);

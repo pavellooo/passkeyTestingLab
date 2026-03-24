@@ -151,7 +151,7 @@ Use this shape for both backend and frontend events.
 6. Sequence diagram/export (if needed)
 
 ## Working Checklist
-- [ ] Phase 1 complete
+- [x] Phase 1 complete ✅ Verified 2026-03-23
 - [ ] Phase 2 complete
 - [ ] Phase 3 complete
 - [ ] Phase 4 complete
@@ -168,6 +168,43 @@ Use this section to keep continuity between chats.
 - Decisions made:
 - Open questions:
 - Next step:
+
+### Session Entry - 2026-03-23
+- Date: 2026-03-23
+- Goal: Implement Phase 1 instrumentation foundation and test locally.
+- Changes made:
+  - Added backend trace middleware for all /webauthn routes.
+  - Added backend in-memory trace event store with request/response capture and sanitization.
+  - Added backend endpoint to fetch a trace by traceId.
+  - Added frontend traceId generation and propagation for registration/authentication flows.
+  - Added frontend in-memory flow event buffer on window.__passkeyFlowEvents.
+  - Fixed local development configuration: HTTP instead of HTTPS, proper CORS, correct env values.
+  - Updated README and scripts for consistent local and deployed-local workflows.
+  - Created Frontend/.env.example and PHASE_1_VERIFICATION.md guide.
+- Files touched:
+  - Backend/Server.js
+  - Frontend/src/component/passkey.js
+  - Frontend/.env (created)
+  - Frontend/.env.example (created)
+  - Backend/.env (updated to use local HTTP config)
+  - README.md (updated with working local setup)
+  - package.json (streamlined scripts)
+  - PASSKEY_FLOW_VISIBILITY_PLAN.md
+  - PHASE_1_VERIFICATION.md (created)
+- Decisions made:
+  - Keep Phase 1 storage in-memory first for speed.
+  - Mask obvious token/cookie/authorization fields in logs.
+  - Use x-passkey-trace-id header as the correlation key.
+  - Use HTTP locally to avoid self-signed certificate issues.
+  - Store local config in env (no hardcoded values in code).
+- Verification completed:
+  - ✅ window.__passpeyFlowEvents captures 8+ events per flow
+  - ✅ Frontend event logging working
+  - ✅ Backend trace capture working
+  - ✅ CORS properly configured
+  - ✅ Local development fully functional
+- Next step:
+  - Phase 2: Build Passkey Flow Inspector UI panel/timeline to visualize captured events
 
 ## Notes
 - Start with visibility before UI polish.
