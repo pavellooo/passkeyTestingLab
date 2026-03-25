@@ -124,6 +124,61 @@ const FlowSequenceDiagram = () => {
 
   const selectedEvent = events[selectedEventIdx] || null;
 
+  // Generate a one-line, human-readable description for a key/value
+  function fieldDescription(key, value) {
+    if (key === 'challenge') return 'A random challenge for authentication.';
+    if (key === 'allowCredentials') return 'List of allowed credentials for this operation.';
+    if (key === 'type') return value === 'public-key' ? 'Credential type: public-key.' : `Type: ${value}`;
+    if (key === 'id') return 'Credential ID.';
+    if (key === 'transports') return 'Allowed transports for the credential.';
+    if (key === 'userVerification') return `User verification requirement: ${value}.`;
+    if (key === 'timeout') return `Timeout in milliseconds.`;
+    if (key === 'origin') return 'Origin of the request.';
+    if (key === 'rpId') return 'Relying Party ID.';
+    if (key === 'username') return 'Username for the credential.';
+    if (key === 'displayName') return 'Display name for the user.';
+    if (key === 'publicKey') return 'Public key data.';
+    if (key === 'authenticatorData') return 'Authenticator data.';
+    if (key === 'signature') return 'Signature for the assertion.';
+    if (key === 'clientDataJSON') return 'Client data in JSON format.';
+    if (key === 'attestationObject') return 'Attestation object.';
+    if (key === 'extensions') return 'Extensions included.';
+    if (Array.isArray(value)) return `Array with ${value.length} item(s).`;
+    if (typeof value === 'object' && value !== null) return 'Nested object.';
+    return '';
+  }
+
+  // Recursively generate a flat, readable list for the payload (unlimited depth)
+  function describePayload(payload) {
+    if (!payload || typeof payload !== 'object') return <div>No payload.</div>;
+    let desc = [];
+    if (Array.isArray(payload)) {
+      if (payload.length === 0) return <div>[empty array]</div>;
+      payload.forEach((item, idx) => {
+        desc.push(
+          <div key={idx} style={{ marginBottom: 8 }}>
+            <span style={{ fontWeight: 500, color: '#333' }}>{`[${idx}]`}</span>
+            <div style={{ fontFamily: 'monospace', color: '#222', marginTop: 2 }}>{typeof item === 'object' ? '' : String(item)}</div>
+            <div style={{ fontFamily: 'cursive', color: '#8a6d00', fontSize: 14, marginBottom: 2 }}>{fieldDescription(idx, item)}</div>
+            {typeof item === 'object' && item !== null ? describePayload(item) : null}
+          </div>
+        );
+      });
+      return <div>{desc}</div>;
+    }
+    for (const [key, value] of Object.entries(payload)) {
+      desc.push(
+        <div key={key + '-field'} style={{ marginBottom: 8 }}>
+          <span style={{ fontWeight: 500, color: '#333' }}>{key}:</span>
+          <span style={{ fontFamily: 'monospace', color: '#222', marginLeft: 6 }}>{typeof value === 'object' ? '' : String(value)}</span>
+          <div style={{ fontFamily: 'cursive', color: '#8a6d00', fontSize: 14, marginTop: 2, marginBottom: 2 }}>{fieldDescription(key, value)}</div>
+          {typeof value === 'object' && value !== null ? describePayload(value) : null}
+        </div>
+      );
+    }
+    return <div>{desc}</div>;
+  }
+
   return (
     <div style={{ maxWidth: '1100px', margin: '24px auto', padding: '0 16px', display: 'flex', gap: '32px' }}>
       <div style={{ flex: 2, minWidth: 0 }}>
@@ -246,6 +301,13 @@ const FlowSequenceDiagram = () => {
         ) : (
           <div>No event selected.</div>
         )}
+        {/* Human-readable payload description */}
+        <div style={{ marginTop: 24, background: '#fffbe7', border: '1px solid #ffe08a', borderRadius: 8, padding: '16px 14px', fontSize: 15, maxHeight: 400, overflowY: 'auto' }}>
+          <b>Payload Description:</b>
+          <div style={{ marginTop: 6, color: '#7a5d00' }}>
+            {selectedEvent && selectedEvent.payloadRaw ? describePayload(selectedEvent.payloadRaw) : 'No payload.'}
+          </div>
+        </div>
       </div>
     </div>
   );
