@@ -10,7 +10,7 @@
     "deploy": "node build-and-deploy.js",
     "start-backend": "npm --prefix Backend start",
     "start:deployed-local": "npm run deploy && npm run start-backend",
-    "heroku-postbuild": "npm --prefix Frontend ci && npm --prefix Frontend run build && npm --prefix Backend ci"
+    "heroku-postbuild": "npm --prefix Frontend install && npm --prefix Frontend run build && npm --prefix Backend install"
   },
   "engines": {
     "node": "20.x",

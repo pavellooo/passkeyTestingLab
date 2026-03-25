@@ -71,6 +71,52 @@ const FlowSequenceDiagram = () => {
     setSelectedEventIdx(0); // Reset selected event on trace change
   }, [events]);
 
+  // Export as HTML
+  function handleExportHTML() {
+    if (!diagramRef.current) return;
+    const svg = diagramRef.current.innerHTML;
+    const html = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>Sequence Diagram Export</title></head><body style='background:#fff;'>${svg}</body></html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sequence-diagram-${selectedTraceId || 'export'}.html`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  }
+
+  // Export as PNG
+  function handleExportPNG() {
+    if (!diagramRef.current) return;
+    const svgElem = diagramRef.current.querySelector('svg');
+    if (!svgElem) return;
+    const svgString = new XMLSerializer().serializeToString(svgElem);
+    const canvas = document.createElement('canvas');
+    const bbox = svgElem.getBBox();
+    canvas.width = bbox.width + 40;
+    canvas.height = bbox.height + 40;
+    const ctx = canvas.getContext('2d');
+    const img = new window.Image();
+    const svg64 = btoa(unescape(encodeURIComponent(svgString)));
+    const image64 = 'data:image/svg+xml;base64,' + svg64;
+    img.onload = function () {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 20, 20);
+      canvas.toBlob(function(blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `sequence-diagram-${selectedTraceId || 'export'}.png`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+      }, 'image/png');
+    };
+    img.src = image64;
+  }
+
   // Helper to pretty-print JSON
   function pretty(obj) {
     return JSON.stringify(obj, null, 2);
@@ -81,7 +127,13 @@ const FlowSequenceDiagram = () => {
   return (
     <div style={{ maxWidth: '1100px', margin: '24px auto', padding: '0 16px', display: 'flex', gap: '32px' }}>
       <div style={{ flex: 2, minWidth: 0 }}>
-        <h1>Passkey Flow Sequence Diagram</h1>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h1 style={{ marginBottom: 0 }}>Passkey Flow Sequence Diagram</h1>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleExportHTML} style={{ border: '1px solid #0f62fe', background: '#eaf3ff', borderRadius: 4, padding: '7px 12px', fontWeight: 600, cursor: 'pointer' }}>Export HTML</button>
+            <button onClick={handleExportPNG} style={{ border: '1px solid #0f62fe', background: '#eaf3ff', borderRadius: 4, padding: '7px 12px', fontWeight: 600, cursor: 'pointer' }}>Export PNG</button>
+          </div>
+        </div>
         <div style={{ marginBottom: '12px' }}>
           <button
             type="button"
