@@ -190,15 +190,17 @@ app.use('/webauthn', (req, res, next) => {
 });
 
 // Rate limiting middleware
+
+// Use much higher limits for local development, strict for production
 const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    max: isProduction ? 100 : 10000, // 100 in prod, 10,000 in dev
     message: 'Too many requests from this IP, please try again later.'
 });
 
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // Stricter limit for auth endpoints - 5 attempts per 15 minutes
+    max: isProduction ? 5 : 1000, // 5 in prod, 1000 in dev
     message: 'Too many authentication attempts, please try again later.',
     skipSuccessfulRequests: true // Don't count successful requests
 });

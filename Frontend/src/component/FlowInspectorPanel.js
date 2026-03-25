@@ -210,132 +210,68 @@ const decodeFlowPayload = (event) => {
     conversions: [],
   };
 
+
+  // Recursively enumerate all fields and subfields, with explanations
+  const explainedFields = new Set();
   const addFieldCard = (label, value, why) => {
     decoded.fieldCards.push({ label, value, why });
+    explainedFields.add(label);
   };
 
-  const challengeField = findFirstField(payload, ['challenge', 'response.challenge']);
-  if (typeof challengeField?.value === 'string') {
-    addFieldCard('challenge', challengeField.value, `Server nonce that prevents replay attacks. Source: payloadRaw.${challengeField.path}`);
-    decoded.annotations.push('challenge: random nonce from server used to prevent replay attacks.');
-    decoded.conversions.push('challenge usually moves as base64url text over JSON and becomes bytes before WebAuthn API calls.');
-  }
+  // Helper to explain a field based on its path/key
+  const explainField = (label, value) => {
+    // Custom explanations for known fields
+    if (label === 'challenge') return 'Server nonce that prevents replay attacks.';
+    if (label === 'rp.name') return 'Relying party (site) name shown to user.';
+    if (label === 'rp.id') return 'Relying party ID (domain) checked by authenticator.';
+    if (label === 'user.id') return 'User ID (base64url, usually random bytes, not email).';
+    if (label === 'user.name') return 'User name (usually email or username).';
+    if (label === 'user.displayName') return 'User display name (friendly label).';
+    if (label.startsWith('pubKeyCredParams[') && label.endsWith('].type')) return 'Credential type (should be public-key).';
+    if (label.startsWith('pubKeyCredParams[') && label.endsWith('].alg')) return 'COSE algorithm identifier for credential.';
+    if (label === 'authenticatorSelection.authenticatorAttachment') return '"platform" = device built-in, "cross-platform" = security key.';
+    if (label === 'authenticatorSelection.residentKey') return '"required" means credential must be discoverable on authenticator.';
+    if (label === 'authenticatorSelection.userVerification') return '"required" means biometric/PIN verification needed.';
+    if (label === 'attestation') return 'Attestation conveys device provenance. "direct" = send attestation, "none" = skip.';
+    // Generic explanations
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) return 'Object with subfields.';
+    if (Array.isArray(value)) return 'Array of values.';
+    return 'Field from WebAuthn registration options.';
+  };
 
-  const clientDataField = findFirstField(payload, [
-    'clientDataJSON',
-    'response.clientDataJSON',
-    'assertion.response.clientDataJSON',
-    'credential.response.clientDataJSON',
-  ]);
-  if (typeof clientDataField?.value === 'string') {
-    const clientData = parseClientDataJson(clientDataField.value);
-    if (clientData) {
-      addFieldCard('clientDataJSON.type', clientData.type || 'n/a', `Identifies whether this is registration or authentication. Source: payloadRaw.${clientDataField.path}`);
-      addFieldCard('clientDataJSON.origin', clientData.origin || 'n/a', `Must match the expected site origin on the server. Source: payloadRaw.${clientDataField.path}`);
-      addFieldCard('clientDataJSON.challenge', clientData.challenge || 'n/a', `Must match the challenge originally issued by the backend. Source: payloadRaw.${clientDataField.path}`);
-    } else {
-      addFieldCard('clientDataJSON', 'Unable to parse', `The browser returned bytes, but JSON parsing failed. Source: payloadRaw.${clientDataField.path}`);
+  // Recursive function to enumerate all fields
+  const enumerateFields = (obj, prefix = '') => {
+    if (typeof obj !== 'object' || obj === null) return;
+    if (Array.isArray(obj)) {
+      obj.forEach((item, idx) => {
+        enumerateFields(item, `${prefix}[${idx}]`);
+      });
+      return;
     }
+    Object.entries(obj).forEach(([key, value]) => {
+      const label = prefix ? `${prefix}.${key}` : key;
+      if (!explainedFields.has(label)) {
+        addFieldCard(label, value, explainField(label, value));
+      }
+      if (typeof value === 'object' && value !== null) {
+        enumerateFields(value, label);
+      }
+    });
+  };
 
-    decoded.annotations.push('clientDataJSON includes type, challenge, and origin reported by the browser.');
-    decoded.conversions.push('clientDataJSON is base64/base64url encoded bytes that decode to UTF-8 JSON text.');
-  }
+  // Call recursive enumerator for the payload
+  enumerateFields(payload);
 
-  const authenticatorDataField = findFirstField(payload, [
-    'authenticatorData',
-    'response.authenticatorData',
-    'assertion.response.authenticatorData',
-    'credential.response.authenticatorData',
-  ]);
-  if (typeof authenticatorDataField?.value === 'string') {
-    const parsedAuthData = parseAuthenticatorData(authenticatorDataField.value);
-    if (parsedAuthData) {
-      addFieldCard('authenticatorData.signCount', parsedAuthData.signCount, `Counter helps detect cloned credentials during authentication. Source: payloadRaw.${authenticatorDataField.path}`);
-      addFieldCard('authenticatorData.userPresent', parsedAuthData.flags.userPresent, `User-presence flag indicates local interaction. Source: payloadRaw.${authenticatorDataField.path}`);
-      addFieldCard('authenticatorData.userVerified', parsedAuthData.flags.userVerified, `User-verification flag indicates biometric/PIN verification. Source: payloadRaw.${authenticatorDataField.path}`);
-      addFieldCard('authenticatorData.rpIdHashHex', parsedAuthData.rpIdHashHex, `Hash must match expected RP ID. Source: payloadRaw.${authenticatorDataField.path}`);
-    } else {
-      addFieldCard('authenticatorData', 'Unable to parse', `Expected binary authenticator data but could not decode. Source: payloadRaw.${authenticatorDataField.path}`);
-    }
 
-    decoded.annotations.push('authenticatorData carries RP ID hash, flags, and signature counter (signCount).');
-    decoded.conversions.push('authenticatorData bytes are sent as base64/base64url text, then parsed into structured fields.');
-  }
 
-  const signatureField = findFirstField(payload, [
-    'signature',
-    'response.signature',
-    'assertion.response.signature',
-  ]);
-  if (typeof signatureField?.value === 'string') {
-    const signatureBytes = decodeBase64ToBytes(signatureField.value);
-    addFieldCard('assertion.signatureBytes', signatureBytes?.length || 0, `Signature is verified server-side against the stored public key. Source: payloadRaw.${signatureField.path}`);
-
-    const userHandleField = findFirstField(payload, [
-      'userHandle',
-      'response.userHandle',
-      'assertion.response.userHandle',
-    ]);
-    addFieldCard(
-      'assertion.userHandlePresent',
-      Boolean(userHandleField?.value),
-      `Optional user handle can help identify the account. Source: payloadRaw.${userHandleField?.path || 'response.userHandle (not present)'}`
-    );
-    decoded.annotations.push('assertion response contains signature and optional userHandle for login verification.');
-  }
-
-  const attestationField = findFirstField(payload, [
-    'attestationObject',
-    'response.attestationObject',
-    'credential.response.attestationObject',
-  ]);
-  if (typeof attestationField?.value === 'string') {
-    const attestationBytes = decodeBase64ToBytes(attestationField.value);
-    addFieldCard('attestation.objectBytes', attestationBytes?.length || 0, `Attestation object is CBOR payload from authenticator registration. Source: payloadRaw.${attestationField.path}`);
-    addFieldCard('attestation.format', 'CBOR', `CBOR is compact binary data, not plain JSON. Source: payloadRaw.${attestationField.path}`);
-    decoded.annotations.push('attestationObject is CBOR binary with authenticator metadata and attested credential data.');
-    decoded.conversions.push('attestationObject bytes map to CBOR structures rather than plain JSON text.');
-  }
-
-  if (Array.isArray(payload.allowCredentials)) {
-    addFieldCard('authenticationRequest.allowCredentialsCount', payload.allowCredentials.length, 'Authenticator may only use one of these credential IDs. Source: payloadRaw.allowCredentials');
-
-    const firstCredential = payload.allowCredentials[0];
-    if (firstCredential && typeof firstCredential === 'object') {
-      addFieldCard(
-        'authenticationRequest.allowCredentials[0].type',
-        firstCredential.type || 'n/a',
-        'WebAuthn credential descriptor type expected by the browser. Source: payloadRaw.allowCredentials[0].type'
-      );
-      addFieldCard(
-        'authenticationRequest.allowCredentials[0].id',
-        firstCredential.id || 'n/a',
-        'Credential ID the authenticator is allowed to use for this challenge. Source: payloadRaw.allowCredentials[0].id'
-      );
-      addFieldCard(
-        'authenticationRequest.allowCredentials[0].transports',
-        Array.isArray(firstCredential.transports) ? firstCredential.transports : [],
-        'Allowed authenticator transports for this credential descriptor. Source: payloadRaw.allowCredentials[0].transports'
-      );
-    }
-
-    addFieldCard('authenticationRequest.userVerification', payload.userVerification || 'not-specified', 'Backend policy for biometric/PIN verification requirement. Source: payloadRaw.userVerification');
-    decoded.annotations.push('allowCredentials in request options limits which credential IDs the authenticator can use.');
-  }
-
-  if (payload.id || payload.credentialId) {
-    addFieldCard('credential.id', payload.id || payload.credentialId, 'Public credential identifier stored and looked up by the backend.');
-    addFieldCard('credential.type', payload.type || payload.credential?.type || 'public-key', 'WebAuthn credential type should be public-key.');
-  }
-
+  // Remove explicit per-field logic; rely solely on recursive enumeration above.
+  // Optionally, you can keep the identityOnly/hiddenReason logic if you want to hide decoded view for identity-only payloads:
   const payloadKeys = Object.keys(payload);
   const identityOnly = payloadKeys.length > 0 && payloadKeys.every((key) => IDENTITY_KEYS.includes(key));
-
   if (!decoded.fieldCards.length && identityOnly) {
     decoded.shouldShowDecoded = false;
     decoded.hiddenReason = 'This step only carries account identity input before WebAuthn fields appear.';
   }
-
   if (!decoded.fieldCards.length && !identityOnly) {
     decoded.shouldShowDecoded = false;
     decoded.hiddenReason = 'No WebAuthn-specific fields detected for this event.';
