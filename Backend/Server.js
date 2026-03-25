@@ -219,20 +219,37 @@ const emailSchema = Joi.object({
         })
 });
 
-// Database connection pool with SSL support for production (auto-reconnects)
+
+// Database connection pool with JAWSDB_URL support for Heroku
 const pendingRegistrations = {}; // Store pending registrations in memory
-const con = mysql.createPool({
-    host: process.env.DB_HOST || "localhost",
-    user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "Hashtag@123",
-    database: process.env.DB_NAME || 'webauthn_passkey',
-    ssl: isProduction ? {
-        rejectUnauthorized: false  // JawsDB uses self-signed certificates
-    } : undefined,
-    connectionLimit: 10,
-    waitForConnections: true,
-    queueLimit: 0
-});
+let con;
+if (process.env.JAWSDB_URL) {
+    // Parse JAWSDB_URL (mysql://user:pass@host:port/dbname)
+    const dbUrl = new URL(process.env.JAWSDB_URL);
+    con = mysql.createPool({
+        host: dbUrl.hostname,
+        user: dbUrl.username,
+        password: dbUrl.password,
+        database: dbUrl.pathname.replace('/', ''),
+        port: dbUrl.port || 3306,
+        ssl: {
+            rejectUnauthorized: false // JawsDB uses self-signed certificates
+        },
+        connectionLimit: 10,
+        waitForConnections: true,
+        queueLimit: 0
+    });
+} else {
+    con = mysql.createPool({
+        host: process.env.DB_HOST || "localhost",
+        user: process.env.DB_USER || "root",
+        password: process.env.DB_PASSWORD || "Hashtag@123",
+        database: process.env.DB_NAME || 'webauthn_passkey',
+        connectionLimit: 10,
+        waitForConnections: true,
+        queueLimit: 0
+    });
+}
 
 // Test database connection
 con.getConnection(function(err, connection) {
