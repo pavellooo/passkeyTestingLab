@@ -319,6 +319,30 @@ Use this section to keep continuity between chats.
 - Verification completed:
   - ✅ Frontend build compiles successfully after QoL patch set.
 
+### Session Entry - 2026-03-24 (Phase 3 Start)
+- Date: 2026-03-24
+- Goal: Start Phase 3 and refine decoded UX so event details are understandable.
+- Changes made:
+  - Added decoder helpers in both inspector views to parse common WebAuthn fields.
+  - Added side-by-side event details: Raw Payload and Decoded / Annotated.
+  - Added decoded extraction/annotation coverage for:
+    - challenge
+    - clientDataJSON
+    - authenticatorData summary (flags, RP ID hash, signCount)
+    - assertion/attestation key field summaries
+    - encoding conversion notes (base64/base64url bytes and CBOR note)
+  - Hid decoded panel when events only contain identity input or no WebAuthn fields.
+  - Replaced generic decoded JSON dump with human-readable field cards.
+  - Added per-field "Why this matters" text and compact notes/conversion guidance.
+- Files touched:
+  - Frontend/src/component/FlowInspectorPanel.js
+  - Frontend/src/component/FlowInspectorPage.js
+  - PASSKEY_FLOW_VISIBILITY_PLAN.md
+- Verification completed:
+  - ✅ Frontend build compiles successfully after Phase 3 implementation and UX refinement.
+- Next step:
+  - Tune event-specific labels and copy so each timeline step explains expected payloads more explicitly.
+
 ## Notes
 - Start with visibility before UI polish.
 - Keep logs structured to avoid one-off debug prints.

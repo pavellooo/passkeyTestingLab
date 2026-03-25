@@ -673,6 +673,19 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
                 requireUserVerification: true,
             });
 
+            if (!verification.verified) {
+                return res.status(401).json({ error: 'Authentication verification failed' });
+            }
+
+            const reportedCounter = Number(verification.authenticationInfo?.newCounter);
+            const normalizedStoredCounter = Number.isFinite(storedCounter) ? storedCounter : 0;
+            const hasReportedCounter = Number.isFinite(reportedCounter) && reportedCounter >= 0;
+            // Some authenticators legitimately return 0 counters; keep DB counter monotonic.
+            const nextCounter = hasReportedCounter
+                ? Math.max(normalizedStoredCounter, reportedCounter)
+                : normalizedStoredCounter;
+            const counterDidRegress = hasReportedCounter && reportedCounter < normalizedStoredCounter;
+
             recordTraceEvent(req.traceId, {
                 source: 'backend',
                 direction: 'internal',
@@ -680,25 +693,34 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
                 endpoint: '/webauthn/authenticate/complete',
                 payloadRaw: sanitizeForTrace({
                     verified: verification.verified,
-                    newCounter: verification.authenticationInfo?.newCounter
+                    storedCounter: normalizedStoredCounter,
+                    reportedCounter: hasReportedCounter ? reportedCounter : null,
+                    nextCounter,
+                    counterDidRegress
                 })
             });
             
             console.log('Library verification successful:', JSON.stringify(verification, null, 2));
-            
-            // Extract the new counter value from verification result
-            const newCounter = verification.authenticationInfo.newCounter;
+
+            if (counterDidRegress) {
+                console.warn('Authenticator returned lower counter than stored value; preserving stored counter.', {
+                    email,
+                    storedCounter: normalizedStoredCounter,
+                    reportedCounter,
+                });
+            }
+
             console.log('Authentication successful for user:', email);
             
             // Update the counter and clear the challenge
             const updateUserQuery = `UPDATE users SET challenge = NULL, counter = ? WHERE email = ?`;
-            con.query(updateUserQuery, [newCounter, email], (updateErr) => {
+            con.query(updateUserQuery, [nextCounter, email], (updateErr) => {
                 if (updateErr) {
                     console.error('Error updating user data:', updateErr);
                     return res.status(500).json({ error: 'Database error' });
                 }
                 
-                console.log('User data updated with new counter:', newCounter);
+                console.log('User data updated with counter:', nextCounter);
                 
                 const accessToken = generateAccessToken(email, results[0].user_id);
                 const refreshToken = generateRefreshToken(email, results[0].user_id);
