@@ -677,6 +677,30 @@ function FlowInspectorPage() {
           </button>
           <button
             type="button"
+            onClick={() => {
+              // Build mapping of traceId -> events
+              const traceEventsMap = {};
+              traceSummaries.forEach((summary) => {
+                traceEventsMap[summary.traceId] = [
+                  ...flowEvents.filter((e) => e.traceId === summary.traceId),
+                  ...backendEvents.filter((e) => e.traceId === summary.traceId),
+                ].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+              });
+              navigate('/flow-diagram', {
+                state: {
+                  events: mergedTimeline,
+                  traceId: selectedTraceId,
+                  traceSummaries,
+                  traceEventsMap,
+                },
+              });
+            }}
+            style={{ border: '1px solid #0f62fe', background: '#eaf3ff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer', fontWeight: 600 }}
+          >
+            View Sequence Diagram
+          </button>
+          <button
+            type="button"
             onClick={exportAsJson}
             style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
           >

@@ -7,6 +7,7 @@ import Board from './component/Board';
 import ProtectedRoute from './component/ProtectedRoute';
 import LandingPage from './component/LandingPage.js';
 import FlowInspectorPage from './component/FlowInspectorPage';
+import FlowSequenceDiagram from './component/FlowSequenceDiagram';
 
 // IMPORTANT: set axios defaults once
 axios.defaults.withCredentials = true;
@@ -92,6 +93,7 @@ function App() {
       />
 
       <Route path="/flow-inspector" element={<FlowInspectorPage />} />
+      <Route path="/flow-diagram" element={<FlowSequenceDiagram />} />
     </Routes>
   );
 }

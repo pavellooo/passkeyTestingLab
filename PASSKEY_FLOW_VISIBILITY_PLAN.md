@@ -99,22 +99,22 @@ Tasks:
 Definition of done:
 - A learner can identify what each critical field means without external tools.
 
-### Phase 4: Verification Checkpoints
-Goal: make server validation transparent.
+
+### Phase 4: Sequence Diagram Visualization
+Goal: visually represent the flow of payloads between Browser, Frontend, and Backend as a sequence diagram.
 
 Tasks:
-- Report each verification check as a discrete result row:
-  - Challenge match
-  - Origin check
-  - RP ID hash check
-  - User verification requirements
-  - Signature verification
-  - Counter logic
-- Include pass/fail and a concise reason.
-- Surface failure point prominently in timeline.
+- Add a button to the Flow Inspector page to render a sequence diagram of the current flow.
+- Create a new route (e.g., `/flow-diagram` or similar) to display the diagram.
+- Diagram should show:
+  - Each step as a message between Browser, Frontend, and Backend lanes
+  - Payloads (or summaries) as part of the diagram
+  - Registration and authentication flows
+- Use a diagramming library (e.g., Mermaid.js or similar) for rendering.
+- Ensure routing is properly hooked up from the inspector page.
 
 Definition of done:
-- Failed auth/registration clearly shows first failed checkpoint and reason.
+- A user can view a sequence diagram of a registration or authentication flow, generated from captured events.
 
 ### Phase 5: Diagram + Export (Optional)
 Goal: improve teaching and session handoff.
