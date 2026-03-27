@@ -941,7 +941,7 @@ const FlowSequenceDiagram = () => {
             </div>
             <div style={{ marginBottom: 10 }}>
               <b>Payload Breakdown:</b>
-              <div style={{ background: '#f3f3f3', borderRadius: 4, padding: 8, fontSize: 14, margin: 0 }}>
+              <div style={{ background: '#f3f3f3', borderRadius: 4, padding: 8, fontSize: 14, margin: 0, wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>
                 {selectedEvent.payloadRaw ? describePayload(selectedEvent.payloadRaw) : 'None'}
               </div>
             </div>
