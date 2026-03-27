@@ -35,28 +35,32 @@ function generateAnnotations(event) {
     let detail = '';
     if (code >= 200 && code < 300) {
       type = 'success';
-      detail = `The server processed the request and returned a ${code} success response. Everything went as expected.`;
+      if (code === 200) {
+        detail = 'HTTP 200: The request worked! Everything went fine.';
+      } else {
+        detail = `HTTP ${code}: The request worked and the server said it was successful.`;
+      }
     } else if (code === 400) {
       type = 'error';
-      detail = '400 Bad Request — the server rejected the payload. The challenge or credential data may be malformed or missing a required field.';
+      detail = 'HTTP 400: The server could not understand what was sent. This usually means something is missing or typed wrong.';
     } else if (code === 401) {
       type = 'error';
-      detail = '401 Unauthorized — the server could not verify the passkey signature. The session may have expired or the wrong credential was used.';
+      detail = 'HTTP 401: You are not allowed to do this yet. You may need to log in or use the right passkey.';
     } else if (code === 403) {
       type = 'error';
-      detail = '403 Forbidden — the server understood the request but refuses to process it. This can happen if the origin does not match the rpId or if the user account is locked.';
+      detail = 'HTTP 403: You are not allowed to do this. Even if you are logged in, you do not have permission.';
     } else if (code === 404) {
       type = 'error';
-      detail = '404 Not Found — the server could not find a registered passkey for this user. The credential may have been deleted or the wrong rpId was used.';
+      detail = 'HTTP 404: The thing you asked for was not found. It might not exist or was deleted.';
     } else if (code === 409) {
       type = 'warning';
-      detail = '409 Conflict — a passkey already exists for this user/device combination. The server may be rejecting a duplicate registration.';
+      detail = 'HTTP 409: There is already something like this. For example, you may be trying to register a passkey that already exists.';
     } else if (code >= 500) {
       type = 'error';
-      detail = `${code} Server Error — something went wrong on the backend. This is not caused by the passkey itself; check server logs for details.`;
+      detail = `HTTP ${code}: The server had a problem and could not finish the request. This is not your fault.`;
     } else {
       type = 'warning';
-      detail = `HTTP ${code} — unexpected status code. Check the server response body for more details.`;
+      detail = `HTTP ${code}: The server sent an unexpected response. Something unusual happened.`;
     }
     annotations.push({ type, label: `HTTP ${code}`, detail });
   }
@@ -902,12 +906,40 @@ const FlowSequenceDiagram = () => {
             </div>
             {selectedEvent && (() => {
               const derived = generateAnnotations(selectedEvent);
+              // Remove annotation items whose label matches a payload key or is already described in the breakdown
+              const payloadKeys = selectedEvent && selectedEvent.payloadRaw && typeof selectedEvent.payloadRaw === 'object'
+                ? new Set(Object.keys(selectedEvent.payloadRaw).map(k => k.toLowerCase()))
+                : new Set();
+              // Also filter out annotation labels that are substrings of payload keys (for array/compound fields)
+              const filtered = derived.filter(ann => {
+                const label = ann.label.toLowerCase();
+                // Remove if label is a payload key or is contained in any payload key
+                if (payloadKeys.has(label)) return false;
+                for (const k of payloadKeys) {
+                  if (k.includes(label) || label.includes(k)) return false;
+                }
+                // Remove if label is a common field described in fieldDescription
+                const commonFields = [
+                  'challenge', 'allowcredentials', 'excludecredentials', 'type', 'id', 'rawid', 'transports',
+                  'userverification', 'timeout', 'rpid', 'rp', 'user', 'username', 'displayname',
+                  'authenticatordata', 'clientdatajson', 'signature', 'userhandle', 'attestationobject',
+                  'publickey', 'publickeyalgorithm', 'verified', 'storedcounter', 'reportedcounter',
+                  'nextcounter', 'counterdidregress', 'success', 'hasresponse', 'hasassertion', 'assertion',
+                  'origin', 'crossorigin', 'email', 'pubkeycredparams', 'alg', 'authenticatorselection',
+                  'authenticatorattachment', 'residentkey', 'attestation', 'extensions'
+                ];
+                if (commonFields.includes(label.replace(/\s/g, '').toLowerCase())) return false;
+                return true;
+              });
               return (
                 <div style={{ marginBottom: 10 }}>
-                  <b>Annotations</b>
+                  <b>Summary</b>
                   <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {derived.map((ann, i) => {
+                    {filtered.length === 0 ? (
+                      <span style={{ color: '#888', fontSize: 13 }}>No additional summary for this event.</span>
+                    ) : filtered.map((ann, i) => {
                       const s = TYPE_STYLES[ann.type] || TYPE_STYLES.info;
+                      const shortDetail = ann.detail.split('. ')[0] + (ann.detail.endsWith('.') ? '' : '.');
                       return (
                         <div key={i} style={{
                           border: s.border,
@@ -915,17 +947,16 @@ const FlowSequenceDiagram = () => {
                           borderRadius: 6,
                           padding: '8px 10px',
                           fontSize: 13,
+                          display: 'flex', alignItems: 'center', gap: 8
                         }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                            <span style={{
-                              width: 8, height: 8, borderRadius: '50%',
-                              background: s.dot, flexShrink: 0, display: 'inline-block',
-                            }}/>
-                            <span style={{ fontWeight: 600, color: s.labelColor, fontSize: 12 }}>
-                              {ann.label}
-                            </span>
-                          </div>
-                          <div style={{ color: '#333', lineHeight: 1.5 }}>{ann.detail}</div>
+                          <span style={{
+                            width: 8, height: 8, borderRadius: '50%',
+                            background: s.dot, flexShrink: 0, display: 'inline-block',
+                          }}/>
+                          <span style={{ fontWeight: 600, color: s.labelColor, fontSize: 12, marginRight: 8 }}>
+                            {ann.label}
+                          </span>
+                          <span style={{ color: '#333', lineHeight: 1.5 }}>{shortDetail}</span>
                         </div>
                       );
                     })}
