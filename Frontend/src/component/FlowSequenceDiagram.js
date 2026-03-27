@@ -273,27 +273,290 @@ const FlowSequenceDiagram = () => {
 
   // Generate a one-line, human-readable description for a key/value
   function fieldDescription(key, value) {
-    if (key === 'challenge') return 'A random challenge for authentication.';
-    if (key === 'allowCredentials') return 'List of allowed credentials for this operation.';
-    if (key === 'type') return value === 'public-key' ? 'Credential type: public-key.' : `Type: ${value}`;
-    if (key === 'id') return 'Credential ID.';
-    if (key === 'transports') return 'Allowed transports for the credential.';
-    if (key === 'userVerification') return `User verification requirement: ${value}.`;
-    if (key === 'timeout') return `Timeout in milliseconds.`;
-    if (key === 'origin') return 'Origin of the request.';
-    if (key === 'rpId') return 'Relying Party ID.';
-    if (key === 'username') return 'Username for the credential.';
-    if (key === 'displayName') return 'Display name for the user.';
-    if (key === 'publicKey') return 'Public key data.';
-    if (key === 'authenticatorData') return 'Authenticator data.';
-    if (key === 'signature') return 'Signature for the assertion.';
-    if (key === 'clientDataJSON') return 'Client data in JSON format.';
-    if (key === 'attestationObject') return 'Attestation object.';
-    if (key === 'extensions') return 'Extensions included.';
-    if (Array.isArray(value)) return `Array with ${value.length} item(s).`;
-    if (typeof value === 'object' && value !== null) return 'Nested object.';
-    return '';
+  // ── Challenge ──────────────────────────────────────────────────────────────
+  if (key === 'challenge') {
+    return 'A unique random string generated fresh by the server for every login or registration attempt. ' +
+      'Your passkey will cryptographically "sign" this challenge to prove it holds the real secret key. ' +
+      'Because a new challenge is created each time, an attacker who intercepts a previous login ' +
+      'cannot reuse it — this is called replay-attack prevention.';
   }
+
+  // ── Allow / Exclude Credentials ────────────────────────────────────────────
+  if (key === 'allowCredentials') {
+    return `A list of passkeys the server will accept for this login. Each entry contains a credential ` +
+      `ID and the transport methods (USB, internal chip, Bluetooth, etc.) the server knows that ` +
+      `passkey can use. Your browser/device uses this list to find the right passkey without ` +
+      `exposing others. ${Array.isArray(value) ? `(${value.length} credential${value.length !== 1 ? 's' : ''} listed)` : ''}`;
+  }
+  if (key === 'excludeCredentials') {
+    return `A list of passkeys already registered for this account. During registration the server ` +
+      `sends this list so your device won't create a duplicate passkey for a device you've ` +
+      `already enrolled. ${Array.isArray(value) ? `(${value.length} existing credential${value.length !== 1 ? 's' : ''})` : ''}`;
+  }
+
+  // ── Credential type & id ───────────────────────────────────────────────────
+  if (key === 'type') {
+    if (value === 'public-key') {
+      return '"public-key" is the only WebAuthn credential type. It means the passkey stores a ' +
+        'private key on your device and shares only the corresponding public key with the server — ' +
+        'so the server can verify you without ever seeing your secret.';
+    }
+    return `Type: ${value}`;
+  }
+  if (key === 'id') {
+    return 'A stable identifier the server assigned to this specific passkey when it was created. ' +
+      'It is not a secret — it just tells the server which public key to use when verifying your ' +
+      'signature. Think of it like a username for a single passkey.';
+  }
+  if (key === 'rawId') {
+    return 'The same credential ID as "id" but in its original binary (Base64-encoded) form before ' +
+      'any URL-safe encoding is applied. Included alongside "id" to ensure nothing is lost in ' +
+      'encoding conversion.';
+  }
+
+  // ── Transports ─────────────────────────────────────────────────────────────
+  if (key === 'transports') {
+    const transportLabels = {
+      internal: 'a built-in authenticator (fingerprint sensor, Face ID, or Windows Hello)',
+      usb:      'a USB security key (e.g. YubiKey)',
+      nfc:      'an NFC tap (tap the key or phone to a reader)',
+      ble:      'Bluetooth (phone or BLE security key nearby)',
+      hybrid:   'cross-device (scanning a QR code on another phone)',
+      'smart-card': 'a smart card reader',
+    };
+    const labels = (Array.isArray(value) ? value : [value])
+      .map(t => transportLabels[t] || t)
+      .join(', ');
+    return `How the passkey communicates with the browser: ${labels}. The browser uses this hint to ` +
+      `choose the right UI (e.g. show a fingerprint prompt vs. a QR code).`;
+  }
+
+  // ── User verification ──────────────────────────────────────────────────────
+  if (key === 'userVerification') {
+    const meanings = {
+      required:    '"required" means the server insists on a local check — fingerprint, face scan, or PIN — before the passkey is used. If the device cannot perform verification, the request will fail.',
+      preferred:   '"preferred" means perform a fingerprint/PIN check if the device supports it, but don\'t block the flow if it doesn\'t.',
+      discouraged: '"discouraged" means skip the local check entirely — just presence of the device is enough (used for low-risk operations like adding a second factor, not primary login).',
+    };
+    return meanings[value] || `User verification requirement: ${value}.`;
+  }
+
+  // ── Timeout ────────────────────────────────────────────────────────────────
+  if (key === 'timeout') {
+    const secs = typeof value === 'number' ? Math.round(value / 1000) : '?';
+    return `How long (${secs} seconds) the browser will wait for you to complete the passkey gesture ` +
+      `(fingerprint tap, PIN entry, etc.) before giving up and showing an error. Set by the server ` +
+      `to balance security and usability.`;
+  }
+
+  // ── Relying party ──────────────────────────────────────────────────────────
+  if (key === 'rpId') {
+    return `The "Relying Party ID" — the domain name this passkey is bound to (value: "${value}"). ` +
+      `Passkeys are cryptographically tied to this domain, so a passkey created for example.com ` +
+      `cannot be used on evil-example.com. This is the core anti-phishing guarantee of WebAuthn.`;
+  }
+  if (key === 'rp') {
+    return 'Information about the website (Relying Party) the passkey is being registered for. ' +
+      'Contains the domain "id" and a human-readable "name". The browser shows this name to users ' +
+      'in prompts like "Create a passkey for Acme Corp?".';
+  }
+
+  // ── User ───────────────────────────────────────────────────────────────────
+  if (key === 'user') {
+    return 'Identifies the account being enrolled. Contains three sub-fields: "id" (an opaque byte ' +
+      'string your server uses to link the passkey to an account), "name" (usually the email shown ' +
+      'in authenticator UI), and "displayName" (a friendly label like "Jane Smith").';
+  }
+  if (key === 'username') {
+    return `The account identifier (email or username) submitted by the user to start this flow. ` +
+      `The server uses it to look up any existing passkeys and build the challenge. ` +
+      `Value: "${value}"`;
+  }
+  if (key === 'displayName') {
+    return `A human-readable label for the account shown inside the passkey prompt on the ` +
+      `device (e.g. "Jane Smith"). It helps users identify which passkey to approve when they ` +
+      `have multiple accounts on a site. Value: "${value}"`;
+  }
+
+  // ── Crypto: assertion response fields ─────────────────────────────────────
+  if (key === 'authenticatorData') {
+    return 'A binary blob (Base64-encoded here) produced by the authenticator chip/OS. It contains: ' +
+      'the hash of the rpId (proving which site was used), a flags byte (bit 0 = user was present, ' +
+      'bit 2 = user was verified), a counter that increments with every use (so the server can ' +
+      'detect cloned authenticators), and optional extension data. The server checks all of these ' +
+      'before accepting the login.';
+  }
+  if (key === 'clientDataJSON') {
+    return 'A Base64-encoded JSON object assembled by the browser (not the authenticator). It ' +
+      'records the operation type ("webauthn.get" for login, "webauthn.create" for registration), ' +
+      'the exact challenge the server sent, and the page origin. The authenticator signs this ' +
+      'alongside authenticatorData, so any tampering is detected.';
+  }
+  if (key === 'signature') {
+    return 'The cryptographic proof of this login. The passkey\'s private key signed a combination ' +
+      'of authenticatorData + a hash of clientDataJSON. The server verifies this signature with ' +
+      'the stored public key — if the signature is valid, it proves you hold the private key ' +
+      'without the server ever seeing it.';
+  }
+  if (key === 'userHandle') {
+    return 'An opaque byte string (Base64-encoded) returned by the authenticator that links the ' +
+      'passkey to an account on the server. In "username-less" / discoverable credential flows the ' +
+      'server uses this to look up which user logged in, since no username was typed. It is set ' +
+      'during registration and should NOT contain PII (not an email or name).';
+  }
+
+  // ── Crypto: attestation (registration) ────────────────────────────────────
+  if (key === 'attestationObject') {
+    return 'A CBOR-encoded object returned only during registration. It bundles three things: ' +
+      '(1) the new public key itself, (2) authenticatorData (same structure as in login), and ' +
+      '(3) an optional attestation statement — a certificate chain proving which make/model of ' +
+      'authenticator created the key, useful for high-security scenarios. Most consumer sites ' +
+      'use "none" attestation and ignore the certificate.';
+  }
+  if (key === 'publicKey') {
+    return 'The public half of the passkey\'s key pair (COSE-encoded). The server stores this ' +
+      'permanently. It can only verify signatures — it cannot be used to log in by itself or to ' +
+      'recover the private key. Think of it like a padlock the server keeps; only your device ' +
+      'holds the matching key.';
+  }
+  if (key === 'publicKeyAlgorithm') {
+    const algNames = { '-7': 'ES256 (ECDSA with SHA-256)', '-257': 'RS256 (RSASSA-PKCS1-v1_5 with SHA-256)', '-8': 'EdDSA (Ed25519)' };
+    const name = algNames[String(value)] || `algorithm ID ${value}`;
+    return `The signing algorithm used by this passkey: ${name}. This tells the server how to ` +
+      `verify signatures. ES256 (the most common) uses elliptic-curve cryptography, which is ` +
+      `fast and produces compact signatures.`;
+  }
+
+  // ── Counter fields ─────────────────────────────────────────────────────────
+  if (key === 'verified') {
+    return value === true
+      ? 'The server successfully verified the passkey signature, confirmed the challenge matched, ' +
+        'checked the origin, and accepted the counter. Authentication passed.'
+      : 'Verification failed — the server rejected the passkey response. Possible causes: wrong ' +
+        'challenge, mismatched origin, invalid signature, or a counter regression (potential clone).';
+  }
+  if (key === 'storedCounter') {
+    return `The sign-count the server had stored from the previous successful use of this passkey ` +
+      `(value: ${value}). WebAuthn authenticators increment a counter on every use to help detect ` +
+      `cloned credentials.`;
+  }
+  if (key === 'reportedCounter') {
+    return `The sign-count value the authenticator reported in this response (value: ${value}). ` +
+      `The server compares this to the stored counter to verify it has not gone backwards, which ` +
+      `would suggest the passkey was copied to another device.`;
+  }
+  if (key === 'nextCounter') {
+    return `The value (${value}) the server will now store as the new sign-count for this passkey. ` +
+      `On the next login the reported counter must be ≥ this value, or the server flags a ` +
+      `potential clone attack.`;
+  }
+  if (key === 'counterDidRegress') {
+    return value === false
+      ? 'The sign-count did not go backwards — no clone detected. Counter validation passed.'
+      : 'The counter regressed (new value < stored value). This can indicate the passkey was ' +
+        'cloned to another device. High-security apps may reject or flag this login.';
+  }
+
+  // ── Misc response fields ───────────────────────────────────────────────────
+  if (key === 'success') {
+    return value === true
+      ? 'The server completed the operation successfully and considers the user authenticated.'
+      : 'The server returned a failure response. Check earlier events for the specific error.';
+  }
+  if (key === 'hasResponse') {
+    return value === true
+      ? 'The browser\'s navigator.credentials.get() call returned a credential object — the user ' +
+        'completed the passkey gesture (fingerprint, PIN, etc.) successfully.'
+      : 'No credential was returned — the user may have cancelled or the authenticator was unavailable.';
+  }
+  if (key === 'hasAssertion') {
+    return value === true
+      ? 'The backend received the signed assertion from the frontend and is ready to verify it.'
+      : 'No assertion was received by the backend.';
+  }
+  if (key === 'assertion') {
+    return 'The full signed response from the user\'s authenticator, sent to the server for ' +
+      'verification. Contains the credential ID, the signed authenticatorData, clientDataJSON, ' +
+      'the signature, and optionally the userHandle. This is the "proof of possession" of the passkey.';
+  }
+  if (key === 'origin') {
+    return `The full URL origin (scheme + host + port) of the page that initiated this WebAuthn ` +
+      `operation (value: "${value}"). The authenticator signs this into clientDataJSON. The server ` +
+      `checks it matches the expected origin — a mismatch means a phishing page tried to relay ` +
+      `the request.`;
+  }
+  if (key === 'crossOrigin') {
+    return value === false
+      ? '"crossOrigin: false" means the credential was created on the same origin as the page — ' +
+        'the normal case. A cross-origin value of true would mean an iframe on a different domain ' +
+        'initiated the ceremony, which most servers reject.'
+      : 'The WebAuthn ceremony was initiated from a different origin (cross-origin iframe). ' +
+        'Servers typically reject this unless explicitly configured to allow it.';
+  }
+  if (key === 'email') {
+    return `The email address submitted by the user to identify their account (value: "${value}"). ` +
+      `Used by the server to look up registered passkeys and build the authentication challenge.`;
+  }
+
+  // ── PubKeyCredParams (registration) ───────────────────────────────────────
+  if (key === 'pubKeyCredParams') {
+    return `An ordered list of cryptographic algorithms the server is willing to accept for the ` +
+      `new passkey. The device picks the first algorithm it supports. ` +
+      `${Array.isArray(value) ? `(${value.length} algorithm${value.length !== 1 ? 's' : ''} offered)` : ''}`;
+  }
+  if (key === 'alg') {
+    const algNames = { '-7': 'ES256 (ECDSA/P-256)', '-257': 'RS256 (RSA/PKCS1)', '-8': 'EdDSA (Ed25519)' };
+    return `Algorithm code ${value} = ${algNames[String(value)] || 'unknown algorithm'}. ` +
+      `This integer is defined by the COSE standard (RFC 8152).`;
+  }
+
+  // ── Authenticator selection (registration) ─────────────────────────────────
+  if (key === 'authenticatorSelection') {
+    return 'Constraints the server places on which type of authenticator can be used to register. ' +
+      'Sub-fields like "authenticatorAttachment", "residentKey", and "userVerification" let the ' +
+      'server require, for example, a built-in device sensor (not a USB key) and that the passkey ' +
+      'be stored on the device for username-less login.';
+  }
+  if (key === 'authenticatorAttachment') {
+    const meanings = {
+      platform:      '"platform" — only accept a built-in authenticator (Face ID, fingerprint sensor, Windows Hello). No USB or Bluetooth keys.',
+      'cross-platform': '"cross-platform" — only accept a roaming authenticator such as a hardware security key (YubiKey, etc.).',
+    };
+    return meanings[value] || `Authenticator attachment preference: ${value}.`;
+  }
+  if (key === 'residentKey') {
+    const meanings = {
+      required:    '"required" — the passkey must be stored on the authenticator as a discoverable credential. This enables username-less login (the server never asks for an email).',
+      preferred:   '"preferred" — store as discoverable if possible, fall back to non-discoverable.',
+      discouraged: '"discouraged" — do not store on the authenticator; the server will pass a credential ID at login time.',
+    };
+    return meanings[value] || `Resident key requirement: ${value}.`;
+  }
+
+  // ── Attestation conveyance ─────────────────────────────────────────────────
+  if (key === 'attestation') {
+    const meanings = {
+      none:     '"none" — the server does not need a certificate proving what type of authenticator was used. Simplest and most privacy-preserving option; fine for most consumer apps.',
+      indirect: '"indirect" — the server wants attestation but allows the browser to anonymise it.',
+      direct:   '"direct" — the server wants the raw attestation certificate so it can verify the exact make/model of authenticator.',
+      enterprise: '"enterprise" — the server wants unique device identifiers, used in corporate MDM scenarios.',
+    };
+    return meanings[value] || `Attestation conveyance preference: ${value}.`;
+  }
+
+  // ── Extensions ────────────────────────────────────────────────────────────
+  if (key === 'extensions') {
+    return 'Optional WebAuthn extensions that add extra capabilities or metadata to the ceremony. ' +
+      'Common examples: "credProps" (tells the client whether a resident/discoverable key was ' +
+      'created), "uvm" (user verification method — reports biometric vs PIN), "prf" (lets the ' +
+      'passkey derive a symmetric key for encryption use cases).';
+  }
+
+  // ── Generic fallbacks ─────────────────────────────────────────────────────
+  if (Array.isArray(value)) return `Array with ${value.length} item${value.length !== 1 ? 's' : ''}.`;
+  if (typeof value === 'object' && value !== null) return 'Nested object — expand to see sub-fields.';
+  return '';
+}
 
   // Recursively generate a flat, readable list for the payload (unlimited depth)
   function describePayload(payload) {
@@ -380,10 +643,16 @@ const FlowSequenceDiagram = () => {
               </pre>
             </div>
             <div style={{ marginBottom: 10 }}>
-              <b>Payload:</b>
-              <pre style={{ background: '#f3f3f3', borderRadius: 4, padding: 8, fontSize: 14, margin: 0 }}>
+              <b>Raw Payload:</b>
+              <pre style={{ margin: 0, background: '#121212', color: '#e7e7e7', fontSize: '12px', lineHeight: '1.5', padding: '10px', borderRadius: '6px', overflowX: 'auto' }}>
                 {selectedEvent.payloadRaw ? pretty(selectedEvent.payloadRaw) : 'None'}
               </pre>
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <b>Payload Breakdown:</b>
+              <div style={{ background: '#f3f3f3', borderRadius: 4, padding: 8, fontSize: 14, margin: 0 }}>
+                {selectedEvent.payloadRaw ? describePayload(selectedEvent.payloadRaw) : 'None'}
+              </div>
             </div>
           </div>
         ) : (
