@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import FlowInspectorPanel from './FlowInspectorPanel';
+
 
 
 // Landing page with navigation to login and tools
