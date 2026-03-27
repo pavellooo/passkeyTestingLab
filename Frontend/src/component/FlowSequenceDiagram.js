@@ -45,21 +45,81 @@ function generateMermaidSequence(events) {
   return diagram;
 }
 
+// Helper to load and prune flow events from localStorage
+const FLOW_EVENTS_STORAGE_KEY = 'passkeyFlowEvents';
+const FLOW_EVENTS_TTL_MS = 5 * 60 * 1000;
+function pruneExpiredFlowEvents(events) {
+  const cutoff = Date.now() - FLOW_EVENTS_TTL_MS;
+  return (events || []).filter((event) => {
+    const timestamp = new Date(event?.timestamp || 0).getTime();
+    if (Number.isNaN(timestamp)) {
+      return false;
+    }
+    return timestamp >= cutoff;
+  });
+}
+function loadPersistedFlowEvents() {
+  try {
+    const raw = window.localStorage.getItem(FLOW_EVENTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return pruneExpiredFlowEvents(parsed);
+    if (parsed && Array.isArray(parsed.events)) return pruneExpiredFlowEvents(parsed.events);
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 const FlowSequenceDiagram = () => {
   const diagramRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
-  // Expect events, traceId, traceSummaries, traceEventsMap passed via location.state
+  // Try to get traces from location.state, else fallback to localStorage
   const locationState = location.state || {};
-  const initialTraceId = locationState.traceId || '';
-  const traceSummaries = locationState.traceSummaries || [];
-  const traceEventsMap = locationState.traceEventsMap || {};
+  let traceEvents = [];
+  if (locationState.traceEventsMap && Object.keys(locationState.traceEventsMap).length > 0) {
+    // Use passed-in traces
+    traceEvents = Object.values(locationState.traceEventsMap).flat();
+  } else {
+    traceEvents = loadPersistedFlowEvents();
+  }
+  // Group by traceId
+  const traceEventsMap = traceEvents.reduce((acc, evt) => {
+    if (!evt.traceId) return acc;
+    if (!acc[evt.traceId]) acc[evt.traceId] = [];
+    acc[evt.traceId].push(evt);
+    return acc;
+  }, {});
+  // Build summaries with email and time
+  const traceSummaries = Object.keys(traceEventsMap).map(traceId => {
+    const events = traceEventsMap[traceId];
+    // Try to find email/username in any event
+    let email = '';
+    for (const evt of events) {
+      if (evt.payloadRaw && (evt.payloadRaw.email || evt.payloadRaw.username)) {
+        email = evt.payloadRaw.email || evt.payloadRaw.username;
+        break;
+      }
+    }
+    // Use first event's timestamp
+    let time = '';
+    if (events.length > 0 && events[0].timestamp) {
+      const d = new Date(events[0].timestamp);
+      if (!isNaN(d.getTime())) {
+        time = d.toLocaleString();
+      }
+    }
+    return { traceId, label: email, time };
+  });
+  const initialTraceId = locationState.traceId || (traceSummaries.length > 0 ? traceSummaries[0].traceId : '');
 
   // State for selected trace and selected event
   const [selectedTraceId, setSelectedTraceId] = useState(initialTraceId);
   const events = traceEventsMap[selectedTraceId] || [];
   const [selectedEventIdx, setSelectedEventIdx] = useState(0);
 
+  // Only reset selectedEventIdx when the trace changes, not on every events update
   useEffect(() => {
     if (diagramRef.current) {
       const diagram = generateMermaidSequence(events);
@@ -68,8 +128,12 @@ const FlowSequenceDiagram = () => {
         diagramRef.current.innerHTML = svgCode;
       });
     }
-    setSelectedEventIdx(0); // Reset selected event on trace change
   }, [events]);
+
+  // Reset selectedEventIdx to 0 only when selectedTraceId changes
+  useEffect(() => {
+    setSelectedEventIdx(0);
+  }, [selectedTraceId]);
 
   // Export as HTML
   function handleExportHTML() {
@@ -192,10 +256,10 @@ const FlowSequenceDiagram = () => {
         <div style={{ marginBottom: '12px' }}>
           <button
             type="button"
-            onClick={() => navigate(-1)}
+            onClick={() => window.close()}
             style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
           >
-            Back to Inspector
+            Close Page
           </button>
         </div>
         <div style={{ marginBottom: '12px', fontSize: '16px', color: '#444', display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -203,11 +267,13 @@ const FlowSequenceDiagram = () => {
           <select
             value={selectedTraceId}
             onChange={e => setSelectedTraceId(e.target.value)}
-            style={{ fontSize: '15px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #bbb' }}
+            style={{ fontSize: '15px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #bbb', minWidth: '320px' }}
           >
             {traceSummaries.map(summary => (
               <option key={summary.traceId} value={summary.traceId}>
-                {summary.traceId} {summary.label ? `- ${summary.label}` : ''}
+                {summary.traceId}
+                {summary.label ? ` | ${summary.label}` : ''}
+                {summary.time ? ` | ${summary.time}` : ''}
               </option>
             ))}
           </select>

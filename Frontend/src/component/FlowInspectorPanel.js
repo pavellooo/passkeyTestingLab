@@ -286,6 +286,7 @@ function FlowInspectorPanel() {
   const [backendEventsByTrace, setBackendEventsByTrace] = useState({});
   const [expandedRows, setExpandedRows] = useState({});
   const [backendTraceError, setBackendTraceError] = useState('');
+  const [allExpanded, setAllExpanded] = useState(false);
 
   const clearStoredTraces = () => {
     window.__passkeyFlowEvents = [];
@@ -426,6 +427,23 @@ function FlowInspectorPanel() {
     }));
   };
 
+  // Toggle all expand/collapse
+  const handleToggleAll = () => {
+    if (!allExpanded) {
+      // Expand all
+      const all = {};
+      mergedTimeline.forEach(event => {
+        all[event.uiId] = true;
+      });
+      setExpandedRows(all);
+      setAllExpanded(true);
+    } else {
+      // Collapse all
+      setExpandedRows({});
+      setAllExpanded(false);
+    }
+  };
+
   const copyPayload = async (payload) => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload || {}, null, 2));
@@ -495,6 +513,15 @@ function FlowInspectorPanel() {
         </p>
       ) : null}
 
+      <div style={{ marginBottom: '10px' }}>
+        <button
+          type="button"
+          onClick={handleToggleAll}
+          style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '6px 10px', cursor: 'pointer', marginRight: '10px' }}
+        >
+          {allExpanded ? 'Collapse All' : 'Expand All'}
+        </button>
+      </div>
       <div style={{ maxHeight: '520px', overflowY: 'auto', border: '1px solid #e8e8e8', borderRadius: '8px', padding: '10px' }}>
         {mergedTimeline.length === 0 ? (
           <p style={{ margin: 0, color: '#555' }}>

@@ -23,7 +23,8 @@ For details on the planning and current status of the project, see [PASSKEY_FLOW
 
 ## Deployment Status
 
-Currently in local development. Heroku deployment will be configured once database addon is set up.
+Should function both in local development and via this URL. Hosted on Heroku with a JawsDB MYSQL database
+https://passkey-testing-lab-ecc52e0ca9c4.herokuapp.com/
 
 ## Project Overview
 

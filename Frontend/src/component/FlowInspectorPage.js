@@ -663,41 +663,23 @@ function FlowInspectorPage() {
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <button
             type="button"
-            onClick={expandAllRows}
-            style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
-          >
-            Expand All
-          </button>
-          <button
-            type="button"
-            onClick={collapseAllRows}
-            style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
-          >
-            Collapse All
-          </button>
-          <button
-            type="button"
             onClick={() => {
-              // Build mapping of traceId -> events
-              const traceEventsMap = {};
-              traceSummaries.forEach((summary) => {
-                traceEventsMap[summary.traceId] = [
-                  ...flowEvents.filter((e) => e.traceId === summary.traceId),
-                  ...backendEvents.filter((e) => e.traceId === summary.traceId),
-                ].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
-              });
-              navigate('/flow-diagram', {
-                state: {
-                  events: mergedTimeline,
-                  traceId: selectedTraceId,
-                  traceSummaries,
-                  traceEventsMap,
-                },
-              });
+              const allExpanded = Object.keys(expandedRows).length === mergedTimeline.length && mergedTimeline.length > 0;
+              if (!allExpanded) {
+                // Expand all
+                const all = {};
+                mergedTimeline.forEach((event) => {
+                  all[event.uiId] = true;
+                });
+                setExpandedRows(all);
+              } else {
+                // Collapse all
+                setExpandedRows({});
+              }
             }}
-            style={{ border: '1px solid #0f62fe', background: '#eaf3ff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer', fontWeight: 600 }}
+            style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
           >
-            View Sequence Diagram
+            {Object.keys(expandedRows).length === mergedTimeline.length && mergedTimeline.length > 0 ? 'Collapse All' : 'Expand All'}
           </button>
           <button
             type="button"
@@ -715,10 +697,10 @@ function FlowInspectorPage() {
           </button>
           <button
             type="button"
-            onClick={() => navigate('/')}
+            onClick={() => window.close()}
             style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
           >
-            Back To Landing Page
+            Close Page
           </button>
         </div>
       </div>

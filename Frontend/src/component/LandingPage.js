@@ -18,7 +18,20 @@ function LandingPage() {
         </button>
       </div>
 
-      <FlowInspectorPanel />
+      <div style={{ textAlign: 'center', marginTop: '32px' }}>
+        <button
+          onClick={() => window.open('/flow-inspector', '_blank', 'noopener,noreferrer')}
+          style={{ margin: '10px', padding: '12px 28px', fontSize: '18px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+        >
+          Open Flow Inspector
+        </button>
+        <button
+          onClick={() => window.open('/flow-diagram', '_blank', 'noopener,noreferrer')}
+          style={{ margin: '10px', padding: '12px 28px', fontSize: '18px', background: '#388e3c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+        >
+          Open Sequence Diagram
+        </button>
+      </div>
     </div>
   );
 }
