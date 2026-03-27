@@ -200,7 +200,7 @@ function generateAnnotations(event) {
       annotations.push({
         type: 'info',
         label: 'Counter not implemented',
-        detail: 'Both the stored and reported counters are 0. The authenticator you used may not use counters by default, but this is normal and safe for most devices (like Face ID, Windows Hello, or built-in sensors). Your passkey is still secure.',
+        detail: 'Both the stored and reported counters are 0. The authenticator you used may not use counters by default. This is normal and safe for most devices (like Face ID, Windows Hello, or built-in sensors). Your passkey is still secure.',
       });
     } else {
       annotations.push({
@@ -830,21 +830,7 @@ const FlowSequenceDiagram = () => {
   function describePayload(payload) {
     if (!payload || typeof payload !== 'object') return <div>No payload.</div>;
     let desc = [];
-    // Special case: both storedCounter and reportedCounter are 0
-    if (
-      payload &&
-      typeof payload === 'object' &&
-      payload.storedCounter === 0 &&
-      payload.reportedCounter === 0 &&
-      Object.prototype.hasOwnProperty.call(payload, 'storedCounter') &&
-      Object.prototype.hasOwnProperty.call(payload, 'reportedCounter')
-    ) {
-      desc.push(
-        <div key="counter-note" style={{ marginBottom: 8, color: '#8a6d00', fontSize: 14 }}>
-          The authenticator you used may not use counters by default, but this is normal and safe for most devices (like Face ID, Windows Hello, or built-in sensors). Your passkey is still secure.
-        </div>
-      );
-    }
+    // (Removed: special case for counter note; now handled in annotation only)
     if (Array.isArray(payload)) {
       if (payload.length === 0) return <div>[empty array]</div>;
       payload.forEach((item, idx) => {
@@ -954,7 +940,6 @@ const FlowSequenceDiagram = () => {
                       <span style={{ color: '#888', fontSize: 13 }}>No additional summary for this event.</span>
                     ) : filtered.map((ann, i) => {
                       const s = TYPE_STYLES[ann.type] || TYPE_STYLES.info;
-                      const shortDetail = ann.detail.split('. ')[0] + (ann.detail.endsWith('.') ? '' : '.');
                       return (
                         <div key={i} style={{
                           border: s.border,
@@ -971,7 +956,7 @@ const FlowSequenceDiagram = () => {
                           <span style={{ fontWeight: 600, color: s.labelColor, fontSize: 12, marginRight: 8 }}>
                             {ann.label}
                           </span>
-                          <span style={{ color: '#333', lineHeight: 1.5 }}>{shortDetail}</span>
+                          <span style={{ color: '#333', lineHeight: 1.5 }}>{ann.detail}</span>
                         </div>
                       );
                     })}
