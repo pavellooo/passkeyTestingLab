@@ -1,3 +1,267 @@
+// ─── Step 1: Add this function above your component ──────────────────────────
+//
+// Derives human-readable annotations from a single event object.
+// Returns an array of annotation objects: { type, label, detail }
+//   type:  'info' | 'success' | 'warning' | 'error'
+//   label: short title (≤ 5 words)
+//   detail: one or two plain-English sentences
+
+function generateAnnotations(event) {
+  if (!event) return [];
+  const annotations = [];
+  const p = event.payloadRaw || {};
+
+  // ── HTTP method + endpoint ────────────────────────────────────────────────
+  if (event.method && event.endpoint) {
+    const methodDescriptions = {
+      POST:   'Sends data to the server to create or trigger something.',
+      GET:    'Asks the server to return data without changing anything.',
+      PUT:    'Replaces an existing resource on the server entirely.',
+      PATCH:  'Updates part of an existing resource on the server.',
+      DELETE: 'Removes a resource from the server.',
+    };
+    annotations.push({
+      type: 'info',
+      label: `${event.method} ${event.endpoint}`,
+      detail: methodDescriptions[event.method] ||
+        `HTTP ${event.method} request to ${event.endpoint}.`,
+    });
+  }
+
+  // ── HTTP status code ──────────────────────────────────────────────────────
+  if (event.statusCode !== undefined) {
+    const code = event.statusCode;
+    let type = 'info';
+    let detail = '';
+    if (code >= 200 && code < 300) {
+      type = 'success';
+      detail = `The server processed the request and returned a ${code} success response. Everything went as expected.`;
+    } else if (code === 400) {
+      type = 'error';
+      detail = '400 Bad Request — the server rejected the payload. The challenge or credential data may be malformed or missing a required field.';
+    } else if (code === 401) {
+      type = 'error';
+      detail = '401 Unauthorized — the server could not verify the passkey signature. The session may have expired or the wrong credential was used.';
+    } else if (code === 403) {
+      type = 'error';
+      detail = '403 Forbidden — the server understood the request but refuses to process it. This can happen if the origin does not match the rpId or if the user account is locked.';
+    } else if (code === 404) {
+      type = 'error';
+      detail = '404 Not Found — the server could not find a registered passkey for this user. The credential may have been deleted or the wrong rpId was used.';
+    } else if (code === 409) {
+      type = 'warning';
+      detail = '409 Conflict — a passkey already exists for this user/device combination. The server may be rejecting a duplicate registration.';
+    } else if (code >= 500) {
+      type = 'error';
+      detail = `${code} Server Error — something went wrong on the backend. This is not caused by the passkey itself; check server logs for details.`;
+    } else {
+      type = 'warning';
+      detail = `HTTP ${code} — unexpected status code. Check the server response body for more details.`;
+    }
+    annotations.push({ type, label: `HTTP ${code}`, detail });
+  }
+
+  // ── Direction context ─────────────────────────────────────────────────────
+  if (event.direction === 'inbound' && event.source === 'backend') {
+    annotations.push({
+      type: 'info',
+      label: 'Backend received request',
+      detail: 'The server is receiving this event — it will validate inputs and perform the next step in the WebAuthn ceremony.',
+    });
+  }
+  if (event.direction === 'outbound' && event.source === 'backend') {
+    annotations.push({
+      type: 'info',
+      label: 'Backend sending response',
+      detail: 'The server is dispatching this response back to the browser. The frontend will process it and continue the flow.',
+    });
+  }
+  if (event.direction === 'inbound' && event.source === 'frontend') {
+    annotations.push({
+      type: 'info',
+      label: 'Frontend received response',
+      detail: 'The browser received a response from the server and will now pass the data to the WebAuthn API or update UI state.',
+    });
+  }
+  if (event.direction === 'internal' && event.source === 'frontend' &&
+      event.step && event.step.startsWith('browser.')) {
+    annotations.push({
+      type: 'info',
+      label: 'Browser API call',
+      detail: 'This event represents a call to a browser-native WebAuthn API (navigator.credentials). No network request is made — the browser talks directly to the device authenticator.',
+    });
+  }
+
+  // ── Email / account ───────────────────────────────────────────────────────
+  const email = p.email || (p.user && p.user.name);
+  if (email) {
+    annotations.push({
+      type: 'info',
+      label: 'Account identifier',
+      detail: `This event is associated with the account "${email}". The server uses this to look up registered passkeys and build a personalised challenge.`,
+    });
+  }
+
+  // ── Challenge presence ────────────────────────────────────────────────────
+  if (p.challenge) {
+    annotations.push({
+      type: 'info',
+      label: 'Challenge issued',
+      detail: `A fresh cryptographic challenge was generated for this request. It expires after ${p.timeout ? Math.round(p.timeout / 1000) + ' seconds' : 'a short window'} and can only be used once, preventing replay attacks.`,
+    });
+  }
+
+  // ── Credential count in allowCredentials ──────────────────────────────────
+  if (Array.isArray(p.allowCredentials)) {
+    const count = p.allowCredentials.length;
+    if (count === 0) {
+      annotations.push({
+        type: 'warning',
+        label: 'No credentials listed',
+        detail: 'The server returned an empty allowCredentials list. This triggers a "discoverable credential" flow — the browser will prompt the user to pick any passkey stored for this site. Make sure the user has registered at least one passkey.',
+      });
+    } else {
+      annotations.push({
+        type: 'info',
+        label: `${count} passkey${count !== 1 ? 's' : ''} on file`,
+        detail: `The server found ${count} registered passkey${count !== 1 ? 's' : ''} for this account and is presenting ${count !== 1 ? 'them' : 'it'} to the browser. The browser will match one against credentials stored on this device.`,
+      });
+    }
+  }
+
+  // ── browser.get result ────────────────────────────────────────────────────
+  if (event.step === 'browser.get.completed') {
+    if (p.hasResponse === true) {
+      annotations.push({
+        type: 'success',
+        label: 'User gesture completed',
+        detail: 'The user successfully completed the passkey gesture (fingerprint, face scan, or PIN). The browser has received a signed assertion and will now send it to the server.',
+      });
+    } else if (p.hasResponse === false) {
+      annotations.push({
+        type: 'error',
+        label: 'No credential returned',
+        detail: 'The browser\'s navigator.credentials.get() call returned nothing. The user may have cancelled the prompt, or no matching passkey was found on this device.',
+      });
+    }
+    if (p.id) {
+      annotations.push({
+        type: 'info',
+        label: 'Credential identified',
+        detail: `The authenticator selected the passkey with ID "${p.id}". This ID will be sent to the server so it knows which stored public key to use for signature verification.`,
+      });
+    }
+  }
+
+  // ── Assertion payload ─────────────────────────────────────────────────────
+  if (p.assertion) {
+    annotations.push({
+      type: 'info',
+      label: 'Signed assertion present',
+      detail: 'The frontend has attached the full signed assertion — authenticatorData, clientDataJSON, and signature — to this request. The server will now cryptographically verify all three.',
+    });
+    if (p.assertion.response && p.assertion.response.userHandle) {
+      annotations.push({
+        type: 'info',
+        label: 'User handle returned',
+        detail: 'The authenticator returned a userHandle, which lets the server identify the account without the user having typed an email. This is the "discoverable credential" (username-less login) mechanism.',
+      });
+    }
+  }
+
+  // ── Verification result ───────────────────────────────────────────────────
+  if (p.verified === true) {
+    annotations.push({
+      type: 'success',
+      label: 'Signature verified',
+      detail: 'The server validated the cryptographic signature against the stored public key. The challenge matched, the origin was correct, and the counter was acceptable. Authentication succeeded.',
+    });
+  } else if (p.verified === false) {
+    annotations.push({
+      type: 'error',
+      label: 'Verification failed',
+      detail: 'The server rejected the passkey response. Possible causes: the signature did not match the stored public key, the challenge was wrong or expired, the origin was unexpected, or the counter regressed (possible clone detected).',
+    });
+  }
+
+  // ── Counter analysis ──────────────────────────────────────────────────────
+  if (p.counterDidRegress === true) {
+    annotations.push({
+      type: 'error',
+      label: 'Counter regression detected',
+      detail: `The authenticator reported a sign-count of ${p.reportedCounter}, which is less than the stored value of ${p.storedCounter}. This can indicate the passkey was cloned to another device. High-security applications should reject or flag this login.`,
+    });
+  } else if (p.counterDidRegress === false && p.storedCounter !== undefined) {
+    if (p.storedCounter === 0 && p.reportedCounter === 0) {
+      annotations.push({
+        type: 'info',
+        label: 'Counter not implemented',
+        detail: 'Both the stored and reported counters are 0. Many platform authenticators (like Face ID and Windows Hello) do not implement the sign-count and always return 0. This is normal and not a security concern for these authenticator types.',
+      });
+    } else {
+      annotations.push({
+        type: 'success',
+        label: 'Counter advanced normally',
+        detail: `The sign-count moved from ${p.storedCounter} → ${p.nextCounter}. The counter is incrementing as expected, with no signs of credential cloning.`,
+      });
+    }
+  }
+
+  // ── Final success flag ────────────────────────────────────────────────────
+  if (p.success === true && !p.verified) {
+    annotations.push({
+      type: 'success',
+      label: 'Operation succeeded',
+      detail: 'The server confirmed the operation completed successfully. The user is now authenticated (or registered, depending on the flow).',
+    });
+  }
+  if (p.success === false) {
+    annotations.push({
+      type: 'error',
+      label: 'Operation failed',
+      detail: 'The server returned a failure. Review earlier events in the timeline for the specific error — the root cause usually appears in the preceding backend event.',
+    });
+  }
+
+  // ── Fallback: nothing generated ───────────────────────────────────────────
+  if (annotations.length === 0) {
+    annotations.push({
+      type: 'info',
+      label: 'Internal step',
+      detail: 'This is an internal processing event with no notable fields to annotate. It records an intermediate state transition in the WebAuthn ceremony.',
+    });
+  }
+
+  return annotations;
+}
+
+// ─── Step 2: Annotation styles ─────────────────────────────────────────────
+const TYPE_STYLES = {
+  success: {
+    border: '1px solid #c3e6cb',
+    background: '#f0faf3',
+    labelColor: '#1a6b35',
+    dot: '#28a745',
+  },
+  error: {
+    border: '1px solid #f5c6cb',
+    background: '#fff5f5',
+    labelColor: '#8b1a1a',
+    dot: '#dc3545',
+  },
+  warning: {
+    border: '1px solid #ffeeba',
+    background: '#fffdf0',
+    labelColor: '#856404',
+    dot: '#e0a800',
+  },
+  info: {
+    border: '1px solid #bee5eb',
+    background: '#f0f8ff',
+    labelColor: '#0c5460',
+    dot: '#17a2b8',
+  },
+};
 import React, { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 
@@ -636,12 +900,39 @@ const FlowSequenceDiagram = () => {
             <div style={{ marginBottom: 10 }}>
               <b>Timestamp:</b> {selectedEvent.timestamp ? new Date(selectedEvent.timestamp).toLocaleString() : ''}
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <b>Annotations:</b>
-              <pre style={{ background: '#f3f3f3', borderRadius: 4, padding: 8, fontSize: 14, margin: 0 }}>
-                {selectedEvent.annotations ? pretty(selectedEvent.annotations) : 'None'}
-              </pre>
-            </div>
+            {selectedEvent && (() => {
+              const derived = generateAnnotations(selectedEvent);
+              return (
+                <div style={{ marginBottom: 10 }}>
+                  <b>Annotations</b>
+                  <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {derived.map((ann, i) => {
+                      const s = TYPE_STYLES[ann.type] || TYPE_STYLES.info;
+                      return (
+                        <div key={i} style={{
+                          border: s.border,
+                          background: s.background,
+                          borderRadius: 6,
+                          padding: '8px 10px',
+                          fontSize: 13,
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                            <span style={{
+                              width: 8, height: 8, borderRadius: '50%',
+                              background: s.dot, flexShrink: 0, display: 'inline-block',
+                            }}/>
+                            <span style={{ fontWeight: 600, color: s.labelColor, fontSize: 12 }}>
+                              {ann.label}
+                            </span>
+                          </div>
+                          <div style={{ color: '#333', lineHeight: 1.5 }}>{ann.detail}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
             <div style={{ marginBottom: 10 }}>
               <b>Raw Payload:</b>
               <pre style={{ margin: 0, background: '#121212', color: '#e7e7e7', fontSize: '12px', lineHeight: '1.5', padding: '10px', borderRadius: '6px', overflowX: 'auto' }}>
