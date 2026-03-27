@@ -1,15 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import mermaid from 'mermaid';
-import { useNavigate, useLocation } from 'react-router-dom';
 
 
 // Helper to generate Mermaid sequence diagram from events, with event index for click mapping
+// Returns Mermaid diagram string
 function generateMermaidSequence(events) {
   if (!Array.isArray(events) || events.length === 0) {
     return 'sequenceDiagram\nNote over Frontend: No events to display';
   }
   let diagram = 'sequenceDiagram\n';
   events.forEach((event, idx) => {
+    // Determine message direction
     let from = 'Frontend';
     let to = 'Backend';
     if (event.direction === 'frontend->backend' || event.source === 'frontend') {
@@ -29,111 +30,193 @@ function generateMermaidSequence(events) {
       from = 'Browser';
       to = 'Frontend';
     }
+    // Main label for the event
     let label = event.step || event.endpoint || event.type || 'event';
-    label = label.replace(/\n/g, ' | ');
+    // Build multiline label with <br/>, bold first payload line for HTTP events
+    let labelLines = [label];
+    // Add payload fields if present
     if (event.payloadRaw && typeof event.payloadRaw === 'object') {
       const keys = Object.keys(event.payloadRaw);
       if (keys.length > 0) {
-        label += ` | (${keys.slice(0, 3).join(', ')}`;
-        if (keys.length > 3) label += ', ...';
-        label += ')';
+        keys.forEach((k) => {
+          let v = event.payloadRaw[k];
+          let vStr = '';
+          if (typeof v === 'string') {
+            vStr = v;
+            // Remove leading/trailing double quotes if present
+            if (vStr.startsWith('"') && vStr.endsWith('"') && vStr.length > 1) {
+              vStr = vStr.slice(1, -1);
+            }
+          } else if (typeof v === 'number' || typeof v === 'boolean') vStr = String(v);
+          else if (Array.isArray(v)) vStr = `[${v.length} items]`;
+          else if (typeof v === 'object' && v !== null) vStr = '{...}';
+          vStr = vStr.length > 60 ? vStr.slice(0, 60) + '…' : vStr;
+          labelLines.push(`${k}: ${vStr}`);
+        });
       }
     }
-    // Add event index for click mapping (Mermaid doesn't support row click, so we render a table below)
-    diagram += `${from}->>${to}: ${label}\n`;
+    // Mermaid multiline label: join with <br/>, do not wrap in double quotes
+    // Mermaid multiline label: join with <br/>, do not wrap in double quotes
+    let mermaidLabel = labelLines.join('<br/>');
+    // Determine arrow direction
+    // Use solid arrow for all messages
+    let arrow = '->>';
+    diagram += `${from}${arrow}${to}: ${mermaidLabel}\n`;
   });
   return diagram;
 }
 
-// Helper to load and prune flow events from localStorage
-const FLOW_EVENTS_STORAGE_KEY = 'passkeyFlowEvents';
-const FLOW_EVENTS_TTL_MS = 5 * 60 * 1000;
-function pruneExpiredFlowEvents(events) {
-  const cutoff = Date.now() - FLOW_EVENTS_TTL_MS;
-  return (events || []).filter((event) => {
-    const timestamp = new Date(event?.timestamp || 0).getTime();
-    if (Number.isNaN(timestamp)) {
-      return false;
-    }
-    return timestamp >= cutoff;
-  });
-}
-function loadPersistedFlowEvents() {
-  try {
-    const raw = window.localStorage.getItem(FLOW_EVENTS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return pruneExpiredFlowEvents(parsed);
-    if (parsed && Array.isArray(parsed.events)) return pruneExpiredFlowEvents(parsed.events);
-    return [];
-  } catch {
-    return [];
-  }
-}
+
+
+
 
 const FlowSequenceDiagram = () => {
-  const diagramRef = useRef(null);
-  const navigate = useNavigate();
-  const location = useLocation();
-  // Try to get traces from location.state, else fallback to localStorage
-  const locationState = location.state || {};
-  let traceEvents = [];
-  if (locationState.traceEventsMap && Object.keys(locationState.traceEventsMap).length > 0) {
-    // Use passed-in traces
-    traceEvents = Object.values(locationState.traceEventsMap).flat();
-  } else {
-    traceEvents = loadPersistedFlowEvents();
-  }
-  // Group by traceId
-  const traceEventsMap = traceEvents.reduce((acc, evt) => {
-    if (!evt.traceId) return acc;
-    if (!acc[evt.traceId]) acc[evt.traceId] = [];
-    acc[evt.traceId].push(evt);
-    return acc;
-  }, {});
-  // Build summaries with email and time
-  const traceSummaries = Object.keys(traceEventsMap).map(traceId => {
-    const events = traceEventsMap[traceId];
-    // Try to find email/username in any event
-    let email = '';
-    for (const evt of events) {
-      if (evt.payloadRaw && (evt.payloadRaw.email || evt.payloadRaw.username)) {
-        email = evt.payloadRaw.email || evt.payloadRaw.username;
-        break;
-      }
-    }
-    // Use first event's timestamp
-    let time = '';
-    if (events.length > 0 && events[0].timestamp) {
-      const d = new Date(events[0].timestamp);
-      if (!isNaN(d.getTime())) {
-        time = d.toLocaleString();
-      }
-    }
-    return { traceId, label: email, time };
-  });
-  const initialTraceId = locationState.traceId || (traceSummaries.length > 0 ? traceSummaries[0].traceId : '');
-
-  // State for selected trace and selected event
-  const [selectedTraceId, setSelectedTraceId] = useState(initialTraceId);
-  const events = traceEventsMap[selectedTraceId] || [];
+  const [events, setEvents] = useState([]);
   const [selectedEventIdx, setSelectedEventIdx] = useState(0);
+  const [diagramKey, setDiagramKey] = useState(0);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const diagramRef = useRef(null);
 
-  // Only reset selectedEventIdx when the trace changes, not on every events update
+  // Handle file upload
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    setSelectedFile(file || null);
+    console.log('File selected:', file);
+  };
+
+  const handleLoad = () => {
+    if (!selectedFile) {
+      alert('No file selected.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const raw = evt.target.result;
+        const json = JSON.parse(raw);
+        console.log('Raw JSON loaded:', json);
+        let loadedEvents = [];
+        if (Array.isArray(json.mergedTimeline)) {
+          loadedEvents = json.mergedTimeline;
+        } else if (Array.isArray(json.frontendEvents) || Array.isArray(json.backendEvents)) {
+          loadedEvents = [
+            ...(Array.isArray(json.frontendEvents) ? json.frontendEvents : []),
+            ...(Array.isArray(json.backendEvents) ? json.backendEvents : [])
+          ];
+        } else if (Array.isArray(json.events)) {
+          loadedEvents = json.events;
+        } else if (Array.isArray(json)) {
+          loadedEvents = json;
+        } else if (json && typeof json === 'object') {
+          // Try to find a property that is an array of objects
+          const arrProp = Object.values(json).find(v => Array.isArray(v) && v.length && typeof v[0] === 'object');
+          if (arrProp) loadedEvents = arrProp;
+        }
+        if (!Array.isArray(loadedEvents) || loadedEvents.length === 0) {
+          alert('No events found in file. Check the file format.');
+          console.warn('No events found after parsing:', json);
+        }
+        setEvents(loadedEvents);
+        setSelectedEventIdx(0);
+        setDiagramKey(prev => prev + 1);
+        console.log('Loaded events:', loadedEvents);
+      } catch (err) {
+        alert('Invalid JSON file.');
+        console.error('JSON parse error:', err);
+      }
+    };
+    reader.readAsText(selectedFile);
+  };
+
   useEffect(() => {
     if (diagramRef.current) {
+      if (events.length === 0) {
+        diagramRef.current.innerHTML = '';
+        return;
+      }
+      // Debug: Log events before rendering
+      console.log('Rendering diagram with events:', events.length, events);
       const diagram = generateMermaidSequence(events);
-      mermaid.initialize({ startOnLoad: false });
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        themeVariables: {
+          actorFontWeight: 'bold',
+          actorFontSize: '24px',
+        },
+        sequence: {
+          actorMargin: 200,
+          diagramPadding: 30,
+        }
+      });
       mermaid.render('mermaid-seq', diagram, (svgCode) => {
         diagramRef.current.innerHTML = svgCode;
+        try {
+          const svg = diagramRef.current.querySelector('svg');
+          if (!svg) return;
+          Array.from(svg.querySelectorAll('.event-overlay')).forEach(e => e.remove());
+          const messageNodes = Array.from(svg.querySelectorAll('text.messageText'));
+          let eventBlocks = [];
+          let currentBlock = [];
+          messageNodes.forEach((node, i) => {
+            if (currentBlock.length === 0) {
+              currentBlock.push(node);
+            } else {
+              const prevY = parseFloat(currentBlock[currentBlock.length - 1].getAttribute('y'));
+              const currY = parseFloat(node.getAttribute('y'));
+              if (currY - prevY > 25) {
+                eventBlocks.push(currentBlock);
+                currentBlock = [node];
+              } else {
+                currentBlock.push(node);
+              }
+            }
+          });
+          if (currentBlock.length > 0) eventBlocks.push(currentBlock);
+          eventBlocks.forEach((block, idx) => {
+            let group = null;
+            if (block.length > 1) {
+              group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+              block.forEach(node => group.appendChild(node.cloneNode(true)));
+              svg.appendChild(group);
+            }
+            const bbox = (group || block[0]).getBBox();
+            if (group) svg.removeChild(group);
+            const minX = bbox.x - 12;
+            const minY = bbox.y - 12;
+            const width = bbox.width + 24;
+            const height = bbox.height + 24;
+            if (idx === selectedEventIdx) {
+              const highlight = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+              highlight.setAttribute('x', minX);
+              highlight.setAttribute('y', minY);
+              highlight.setAttribute('width', width);
+              highlight.setAttribute('height', height);
+              highlight.setAttribute('fill', '#eaf3ff');
+              highlight.setAttribute('stroke', '#0f62fe');
+              highlight.setAttribute('stroke-width', '2');
+              highlight.classList.add('event-overlay');
+              block[0].parentNode.insertBefore(highlight, block[0]);
+            }
+            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            rect.setAttribute('x', minX);
+            rect.setAttribute('y', minY);
+            rect.setAttribute('width', width);
+            rect.setAttribute('height', height);
+            rect.setAttribute('fill', 'rgba(144,238,144,0.25)');
+            rect.setAttribute('cursor', 'pointer');
+            rect.setAttribute('pointer-events', 'all');
+            rect.setAttribute('title', 'Click to select event');
+            rect.classList.add('event-overlay');
+            rect.addEventListener('click', (e) => { e.stopPropagation(); setSelectedEventIdx(idx); });
+            block[0].parentNode.insertBefore(rect, block[0]);
+          });
+        } catch (e) {}
       });
     }
-  }, [events]);
+  }, [events, selectedEventIdx]);
 
-  // Reset selectedEventIdx to 0 only when selectedTraceId changes
-  useEffect(() => {
-    setSelectedEventIdx(0);
-  }, [selectedTraceId]);
+
 
   // Export as HTML
   function handleExportHTML() {
@@ -144,7 +227,7 @@ const FlowSequenceDiagram = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sequence-diagram-${selectedTraceId || 'export'}.html`;
+    a.download = 'sequence-diagram-export.html';
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
@@ -172,7 +255,7 @@ const FlowSequenceDiagram = () => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `sequence-diagram-${selectedTraceId || 'export'}.png`;
+        a.download = 'sequence-diagram-export.png';
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
@@ -248,77 +331,16 @@ const FlowSequenceDiagram = () => {
       <div style={{ flex: 2, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h1 style={{ marginBottom: 0 }}>Passkey Flow Sequence Diagram</h1>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={handleExportHTML} style={{ border: '1px solid #0f62fe', background: '#eaf3ff', borderRadius: 4, padding: '7px 12px', fontWeight: 600, cursor: 'pointer' }}>Export HTML</button>
-            <button onClick={handleExportPNG} style={{ border: '1px solid #0f62fe', background: '#eaf3ff', borderRadius: 4, padding: '7px 12px', fontWeight: 600, cursor: 'pointer' }}>Export PNG</button>
-          </div>
         </div>
-        <div style={{ marginBottom: '12px' }}>
-          <button
-            type="button"
-            onClick={() => window.close()}
-            style={{ border: '1px solid #d0d0d0', background: '#fff', borderRadius: '4px', padding: '8px 10px', cursor: 'pointer' }}
-          >
-            Close Page
-          </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
+          <input type="file" accept="application/json" onChange={handleFileChange} style={{ marginLeft: 0 }} />
+          <button type="button" onClick={handleLoad} style={{ padding: '8px 16px', borderRadius: 4, border: '1px solid #0f62fe', background: '#eaf3ff', fontWeight: 600, cursor: 'pointer' }}>Load</button>
         </div>
-        <div style={{ marginBottom: '12px', fontSize: '16px', color: '#444', display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <span>Trace:</span>
-          <select
-            value={selectedTraceId}
-            onChange={e => setSelectedTraceId(e.target.value)}
-            style={{ fontSize: '15px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #bbb', minWidth: '320px' }}
-          >
-            {traceSummaries.map(summary => (
-              <option key={summary.traceId} value={summary.traceId}>
-                {summary.traceId}
-                {summary.label ? ` | ${summary.label}` : ''}
-                {summary.time ? ` | ${summary.time}` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div ref={diagramRef} style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '24px', overflowX: 'auto' }} />
-        {/* Clickable event rows below diagram */}
-        <div style={{ marginTop: '24px' }}>
-          <h3 style={{ marginBottom: 8 }}>Events</h3>
-          <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid #eee', borderRadius: 6 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 15 }}>
-              <thead>
-                <tr style={{ background: '#f7f7f7' }}>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>#</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>Step / Type</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>From</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>To</th>
-                  <th style={{ padding: '6px 8px', textAlign: 'left' }}>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {events.map((event, idx) => {
-                  let from = 'Frontend', to = 'Backend';
-                  if (event.direction === 'frontend->backend' || event.source === 'frontend') { from = 'Frontend'; to = 'Backend'; }
-                  else if (event.direction === 'backend->frontend' || event.source === 'backend') { from = 'Backend'; to = 'Frontend'; }
-                  else if (event.direction === 'browser->frontend') { from = 'Browser'; to = 'Frontend'; }
-                  else if (event.direction === 'frontend->browser') { from = 'Frontend'; to = 'Browser'; }
-                  if (!event.direction && event.source === 'frontend' && event.step && event.step.toLowerCase().includes('browser')) { from = 'Browser'; to = 'Frontend'; }
-                  return (
-                    <tr
-                      key={idx}
-                      style={{ background: idx === selectedEventIdx ? '#eaf3ff' : 'transparent', cursor: 'pointer' }}
-                      onClick={() => setSelectedEventIdx(idx)}
-                    >
-                      <td style={{ padding: '6px 8px' }}>{idx + 1}</td>
-                      <td style={{ padding: '6px 8px' }}>{event.step || event.endpoint || event.type || 'event'}</td>
-                      <td style={{ padding: '6px 8px' }}>{from}</td>
-                      <td style={{ padding: '6px 8px' }}>{to}</td>
-                      <td style={{ padding: '6px 8px' }}>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <div
+          key={diagramKey}
+          ref={diagramRef}
+          style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '24px', overflowX: 'auto', marginTop: 16 }}
+        />
       </div>
       {/* Right-side card for selected event */}
       <div style={{ flex: 1, minWidth: 320, maxWidth: 420, background: '#f8fafd', border: '1px solid #e0e0e0', borderRadius: 10, padding: '20px 18px', marginTop: 48, height: 'fit-content' }}>
@@ -367,13 +389,6 @@ const FlowSequenceDiagram = () => {
         ) : (
           <div>No event selected.</div>
         )}
-        {/* Human-readable payload description */}
-        <div style={{ marginTop: 24, background: '#fffbe7', border: '1px solid #ffe08a', borderRadius: 8, padding: '16px 14px', fontSize: 15, maxHeight: 400, overflowY: 'auto' }}>
-          <b>Payload Description:</b>
-          <div style={{ marginTop: 6, color: '#7a5d00' }}>
-            {selectedEvent && selectedEvent.payloadRaw ? describePayload(selectedEvent.payloadRaw) : 'No payload.'}
-          </div>
-        </div>
       </div>
     </div>
   );

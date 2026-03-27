@@ -3,51 +3,52 @@ import Square from './Square.js';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './Board.css';
 
+
+// Board component for Tic Tac Toe game
 export default function Board({ username, onLogout }) {
-  // Array is created to track square has which value with X or O
+  // State for board squares and turn
   const [square, setSquare] = useState(Array(9).fill(null));
-  // This state will keep track whose turn is next
   const [xIsNext, setXIsNext] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
 
   // Use the username prop if provided, otherwise fall back to location state or default
   const displayUsername = username ||  "Player";
-  
   // State to control welcome message visibility
   const [showWelcome, setShowWelcome] = useState(true);
-  
+
   // Hide welcome message after 3 seconds
   useEffect(() => {
     const timer = setTimeout(() => {
       setShowWelcome(false);
     }, 3000);
-    
     return () => clearTimeout(timer);
   }, []);
 
+  // Reset the board to initial state
   function resetBoard() {
     setSquare(Array(9).fill(null));
     setXIsNext(true);
   }
 
+  // Handle logout and redirect
   function handleLogout() {
     onLogout();
     navigate('/');
   }
 
+  // Handle a square click
   function handleClick(i) {
     if (square[i] || calculateWinner(square)) {
       return;
     }
-    
     const nextSquare = square.slice();
     nextSquare[i] = xIsNext ? 'X' : 'O';
-    
     setSquare(nextSquare);
     setXIsNext(!xIsNext);
   }
 
+  // Determine winner or status
   const winner = calculateWinner(square);
   let status;
   if (winner) {
@@ -64,7 +65,6 @@ export default function Board({ username, onLogout }) {
       <div className="app-header">
         <h1>Tic Tac Toe</h1>
       </div>
-      
       {/* Welcome Message */}
       {showWelcome && (
         <div className="welcome-message">
@@ -72,7 +72,6 @@ export default function Board({ username, onLogout }) {
           <p>Get ready to play!</p>
         </div>
       )}
-      
       {/* Navigation Bar */}
       <div className="nav-bar">
         <div className="player-info">
@@ -84,7 +83,6 @@ export default function Board({ username, onLogout }) {
           <button className="nav-btn" onClick={handleLogout}>Log out</button>
         </div>
       </div>
-      
       {/* Game Board */}
       <div className="board">
         {[...Array(9)].map((_, i) => (
@@ -99,6 +97,7 @@ export default function Board({ username, onLogout }) {
   );
 }
 
+// Helper to determine winner
 function calculateWinner(square) {
   const lines = [
     [0, 1, 2],
@@ -110,7 +109,6 @@ function calculateWinner(square) {
     [0, 4, 8],
     [2, 4, 6],
   ];
-
   for (let i = 0; i < lines.length; i++) {
     const [a, b, c] = lines[i];
     if (square[a] && square[a] === square[b] && square[a] === square[c]) {

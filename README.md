@@ -2,22 +2,25 @@
 
 A web application exploring the WebAuthn passkey authentication flow integrated with a Tic Tac Toe game. This project demonstrates secure, passwordless authentication using the FIDO2 standard.
 
-## Passkey Visibility Playground
 
-This project includes a **passkey playground** feature that captures and exposes all passkey-related traffic so you can inspect the complete WebAuthn flow in real time (except for cryptographic secrets, which remain protected by hardware or 3rd-party authenticators like Google Password Manager).
+## Passkey Visibility Playground & Sequence Diagram Workflow
 
-Use the standalone inspector URL during local development:
-- `http://localhost:3000/flow-inspector`
+This project includes a **passkey playground** feature that captures and exposes all passkey-related traffic so you can inspect the complete WebAuthn flow (except for cryptographic secrets, which remain protected by hardware or 3rd-party authenticators like Google Password Manager).
 
-The inspector supports filtering by trace ID so you can focus on a single registration/authentication flow.
+### New Workflow: Sequence Diagram via File Upload
 
-Inspector data retention and controls:
-- Trace events auto-expire after 5 minutes.
-- Standalone inspector provides `Export JSON` to download all currently visible data.
-- Standalone inspector provides `Clear All Traces` to wipe stored local trace data.
-- Standalone inspector supports filtering by email/phone/trace ID while still showing trace IDs.
-- Standalone inspector includes `Expand All` and `Collapse All` timeline controls.
-- Trace grouping by identity helps show separate registration/authentication traces for the same account.
+The sequence diagram page (`/flow-diagram`) now works by uploading a JSON trace file (exported from the inspector or backend). Real-time syncing and dropdown trace selection have been removed for simplicity and reliability.
+
+**How to use the new diagram workflow:**
+1. Run a registration or authentication flow in the app.
+2. Open the Flow Inspector (`/flow-inspector`) and export the trace as JSON.
+3. Go to `/flow-diagram` and upload the exported JSON file.
+4. Click "Load" to visualize the full event sequence as a diagram.
+
+Features:
+- All events from the uploaded trace are shown in the diagram.
+- Clickable overlays highlight each event.
+
 
 For details on the planning and current status of the project, see [PASSKEY_FLOW_VISIBILITY_PLAN.md](PASSKEY_FLOW_VISIBILITY_PLAN.md).
 

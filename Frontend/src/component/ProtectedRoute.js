@@ -1,8 +1,9 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 
+
+// Protects routes by redirecting unauthenticated users to home
 function ProtectedRoute({ element, isAuthenticated }) {
-  // Clone the element and pass all props through
   if (isAuthenticated) {
     return element;
   }

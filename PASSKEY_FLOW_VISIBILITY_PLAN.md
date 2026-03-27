@@ -27,23 +27,11 @@ We explicitly do not expose authenticator private keys or hardware-protected sec
 4. Verification checkpoint reporting
 5. Optional sequence diagram view
 
+
 ## Current Gaps To Address
-- Cross-tab trace visibility is not always immediate with localStorage-only syncing.
-- Export exists, but there is no import/replay screen yet for uploaded files.
-- There is no dedicated full-screen diagram exploration page yet.
+- JWT information view
+- Better description of the payload breakdown
 
-## Phase 2.1: Inspector Reliability Hardening
-Goal: make cross-tab and page-to-page inspector behavior consistent and immediate.
-
-Tasks:
-- Add `BroadcastChannel`-based live event sync (primary) with localStorage as fallback.
-- Add deterministic storage schema/versioning for event persistence.
-- Ensure standalone inspector can list recent traces even when opened before new events arrive.
-- Add a backend `trace index` endpoint for recent trace IDs to reduce frontend dependence on browser storage.
-
-Definition of done:
-- New traces appear in standalone inspector within 1 second while another tab is active.
-- Trace list remains visible after refresh without waiting for new events.
 
 ## Phase Plan
 
@@ -64,23 +52,29 @@ Definition of done:
 - One full authentication attempt can be reconstructed from logs using trace ID.
 
 ### Phase 2: Frontend Timeline UI
-Goal: visualize events in strict order.
+Goal: Visualize events in strict order.
 
 Tasks:
-- Add a "Passkey Flow Inspector" panel.
-- Show timeline items with:
+- Added a "Passkey Flow Inspector" panel.
+- Timeline items show:
   - timestamp
   - event type
   - source (frontend/server)
   - trace ID
-- Add expand/collapse per event.
-- Add copy-to-clipboard for raw payload.
+- Expand/collapse per event.
+- Copy-to-clipboard for raw payload.
+- Filtering by email/phone/trace ID.
+- Identity grouping for multiple traces per account.
+- "Expand All" and "Collapse All" timeline controls.
+- Trace grouping by identity.
+- Live event syncing (initially via BroadcastChannel + localStorage, now simplified for sequence diagram).
 
 Definition of done:
 - A user can watch live event progression during both flows.
+- Timeline is filterable and events are grouped by identity.
 
 ### Phase 3: Raw + Decoded Views
-Goal: make payloads understandable.
+Goal: Make payloads understandable.
 
 Tasks:
 - Side-by-side event detail:
@@ -95,54 +89,41 @@ Tasks:
 - Highlight encoding conversions:
   - ArrayBuffer <-> base64url
   - bytes <-> JSON/CBOR representations
+- Per-field "Why this matters" text and compact notes/conversion guidance.
 
 Definition of done:
 - A learner can identify what each critical field means without external tools.
+- Decoded panel is hidden when events only contain identity input or no WebAuthn fields.
 
-
-### Phase 4: Sequence Diagram Visualization
+### Phase 4: Sequence Diagram Visualization (Updated)
 Goal: visually represent the flow of payloads between Browser, Frontend, and Backend as a sequence diagram.
 
 Tasks:
-- Add a button to the Flow Inspector page to render a sequence diagram of the current flow.
 - Create a new route (e.g., `/flow-diagram` or similar) to display the diagram.
-- Diagram should show:
+- Diagram page now works by uploading a JSON trace file (exported from the inspector or backend).
+- Diagram shows:
   - Each step as a message between Browser, Frontend, and Backend lanes
   - Payloads (or summaries) as part of the diagram
   - Registration and authentication flows
 - Use a diagramming library (e.g., Mermaid.js or similar) for rendering.
-- Ensure routing is properly hooked up from the inspector page.
+- No real-time syncing or dropdowns—just upload and visualize.
 
 Definition of done:
-- A user can view a sequence diagram of a registration or authentication flow, generated from captured events.
+- A user can view a sequence diagram of a registration or authentication flow, generated from an uploaded trace file.
 
-### Phase 5: Diagram + Export (Optional)
-Goal: improve teaching and session handoff.
+### Next Phase: Show JWT Details
+Goal: Add the ability to decode and display JWT (JSON Web Token) details in the inspector and/or diagram views.
 
 Tasks:
-- Add 3-lane sequence diagram (Browser, Backend, Authenticator).
-- Add export of flow record as JSON.
-- Add export as ZIP (JSON + metadata + optional markdown summary).
-- Add optional markdown/text export for documentation snapshots.
+- Detect JWTs in payloads or responses.
+- Decode JWTs and display header, payload, and signature sections.
+- Show claims in a readable format.
+- Highlight important claims (exp, iat, sub, aud, etc).
+- Add UI for toggling raw/decoded JWT view.
 
 Definition of done:
-- A flow can be shared as a reproducible artifact between sessions.
+- A user can click on a JWT and see its decoded details in the UI.
 
-### Phase 6: Import + Replay Explorer (Optional)
-Goal: allow uploaded exports to be restored and explored in a dedicated UI.
-
-Tasks:
-- Add `/flow-explorer` page for import/replay workflows.
-- Add JSON upload parser and schema validation.
-- Add ZIP upload support (extract JSON payload and metadata).
-- Add readable replay view:
-  - timeline list
-  - filter by trace ID/step/source/status
-  - raw payload viewer and decoded viewer (when available)
-- Add sequence diagram mode in the same page for imported flows.
-
-Definition of done:
-- A user can upload a previously exported file and inspect it fully without rerunning the flow.
 
 ## Data Safety Rules
 - Never log or display private keys (not available through WebAuthn APIs anyway).
@@ -188,13 +169,11 @@ Use this shape for both backend and frontend events.
 8. Import + replay explorer (if needed)
 
 ## Working Checklist
-- [x] Phase 1 complete ✅ Verified 2026-03-23
-- [x] Phase 2 complete ✅ Implemented 2026-03-23
-- [ ] Phase 2.1 reliability hardening
-- [ ] Phase 3 complete
-- [ ] Phase 4 complete
-- [ ] Phase 5 complete (optional)
-- [ ] Phase 6 complete (optional)
+- [x] Phase 1 - complete ✅ Verified 2026-03-23
+- [x] Phase 2 - complete ✅ Implemented 2026-03-23
+- [x] Phase 3 - complete ✅ Implemented 2026-03-23
+- [x] Phase 4 - complete ✅ Implemented 2026-03-27
+- [ ] Phase 5 - incomplete
 
 ## Session Log Template
 Use this section to keep continuity between chats.
@@ -347,3 +326,29 @@ Use this section to keep continuity between chats.
 - Start with visibility before UI polish.
 - Keep logs structured to avoid one-off debug prints.
 - Build decode helpers once and reuse in both registration and authentication views.
+
+
+
+### Session Entry - 2026-03-27 (Sequence Diagram Flow View Overhaul)
+- Date: 2026-03-27
+- Goal: Overhaul the sequence diagram flow view for better usability and clarity.
+- Changes made:
+  - Added clickable buttons directly onto the Mermaid sequence diagram for event selection, removing the need for a separate table.
+  - Displayed event payloads directly within the diagram for immediate context.
+  - Enabled uploading of JSON files exported from the flow inspector panel to generate the sequence diagram.
+  - Improved code clarity by adding explanatory comments throughout the relevant components.
+- Files touched:
+  - FlowSequenceDiagram.js
+  - README.md
+  - PASSKEY_FLOW_VISIBILITY_PLAN.md
+- Decisions made:
+  - Integrate all event interaction and payload visibility into the diagram itself for a more intuitive workflow.
+  - Use file upload as the primary method for loading flow data into the diagram (instead of sync with BroadcastChannel)
+- Verification completed:
+  - ✅ Clickable overlays/buttons appear on the diagram and select events as intended.
+  - ✅ Payloads are visible within the diagram.
+  - ✅ JSON upload generates the correct diagram.
+  - ✅ Code is now better documented with comments.
+- Next step:
+  - Continue with JWT detail extraction 
+  - improve display/descriptions in the inspector/diagram views.

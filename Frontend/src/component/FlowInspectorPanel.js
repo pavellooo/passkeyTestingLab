@@ -7,34 +7,7 @@ const apiBase = (process.env.REACT_APP_API_BASE_URL || '').replace(/\/$/, '');
 const apiUrl = (path) => `${apiBase}${path}`;
 const FLOW_EVENTS_STORAGE_KEY = 'passkeyFlowEvents';
 const FLOW_EVENTS_TTL_MS = 5 * 60 * 1000;
-const FLOW_EVENTS_CHANNEL_NAME = 'passkey-flow-events';
 
-let flowEventsChannel;
-
-const getFlowEventsChannel = () => {
-  if (typeof window === 'undefined' || !('BroadcastChannel' in window)) {
-    return null;
-  }
-
-  if (!flowEventsChannel) {
-    flowEventsChannel = new BroadcastChannel(FLOW_EVENTS_CHANNEL_NAME);
-  }
-
-  return flowEventsChannel;
-};
-
-const broadcastFlowEvents = (events) => {
-  const channel = getFlowEventsChannel();
-  if (!channel) {
-    return;
-  }
-
-  channel.postMessage({
-    type: 'flow-events-updated',
-    events,
-    sentAt: new Date().toISOString(),
-  });
-};
 
 const pruneExpiredFlowEvents = (events) => {
   const cutoff = Date.now() - FLOW_EVENTS_TTL_MS;

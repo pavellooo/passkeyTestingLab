@@ -1,6 +1,8 @@
 import React from 'react';
 import './Square.css';
 
+
+// Square component for Tic Tac Toe board
 const Square = ({ value, OnSquareClick }) => {
   return (
     <div 
