@@ -2,6 +2,12 @@
 
 A web application exploring the WebAuthn passkey authentication flow integrated with a Tic Tac Toe game. This project demonstrates secure, passwordless authentication using the FIDO2 standard.
 
+Deployed version available at:
+https://passkey-testing-lab-ecc52e0ca9c4.herokuapp.com/
+Shortened URL:
+https://tinyurl.com/passkeyTestingLab
+
+- Note that the app is likely to be disabled if I do not expect to use it for a while, so that I can save on hosting costs. If you want to try it out, message me and I can enable it for you.
 
 ## Passkey Visibility Playground & Sequence Diagram Workflow
 
