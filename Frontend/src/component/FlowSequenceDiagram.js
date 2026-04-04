@@ -1,986 +1,1803 @@
-// ─── Step 1: Add this function above your component ──────────────────────────
-//
-// Derives human-readable annotations from a single event object.
-// Returns an array of annotation objects: { type, label, detail }
-//   type:  'info' | 'success' | 'warning' | 'error'
-//   label: short title (≤ 5 words)
-//   detail: one or two plain-English sentences
+// FlowSequenceDiagram.js — Passkey Flow Visualizer (complete rewrite)
+// Renders a fully interactive SVG sequence diagram from passkey flow JSON exports.
+// Every arrow is click-selectable; the right panel shows rich contextual detail.
 
-function generateAnnotations(event) {
-  if (!event) return [];
-  const annotations = [];
-  const p = event.payloadRaw || {};
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 
-  // ── HTTP method + endpoint ────────────────────────────────────────────────
-  if (event.method && event.endpoint) {
-    const methodDescriptions = {
-      POST:   'Sends data to the server to create or trigger something.',
-      GET:    'Asks the server to return data without changing anything.',
-      PUT:    'Replaces an existing resource on the server entirely.',
-      PATCH:  'Updates part of an existing resource on the server.',
-      DELETE: 'Removes a resource from the server.',
-    };
-    annotations.push({
-      type: 'info',
-      label: `${event.method} ${event.endpoint}`,
-      detail: methodDescriptions[event.method] ||
-        `HTTP ${event.method} request to ${event.endpoint}.`,
-    });
-  }
+// ─── Palette & tokens (light theme) ───────────────────────────────────────────
+const T = {
+  bg:        '#f6f8fa',
+  surface:   '#ffffff',
+  surfaceAlt:'#f0f2f5',
+  border:    '#d0d7de',
+  borderFaint:'#e8eaed',
+  text:      '#1f2328',
+  textMuted: '#57606a',
+  textFaint: '#afb8c1',
+  accent:    '#0969da',
+  accentDim: '#dbeafe',
+  green:     '#1a7f37',
+  greenDim:  '#dcfce7',
+  yellow:    '#9a6700',
+  yellowDim: '#fef9c3',
+  red:       '#cf222e',
+  redDim:    '#ffeef0',
+  purple:    '#8250df',
+  purpleDim: '#f3e8ff',
+  orange:    '#bc4c00',
+  orangeDim: '#fff1e5',
 
-  // ── HTTP status code ──────────────────────────────────────────────────────
-  if (event.statusCode !== undefined) {
-    const code = event.statusCode;
-    let type = 'info';
-    let detail = '';
-    if (code >= 200 && code < 300) {
-      type = 'success';
-      if (code === 200) {
-        detail = 'HTTP 200: The request worked! Everything went fine.';
-      } else {
-        detail = `HTTP ${code}: The request worked and the server said it was successful.`;
-      }
-    } else if (code === 400) {
-      type = 'error';
-      detail = 'HTTP 400: The server could not understand what was sent. This usually means something is missing or typed wrong.';
-    } else if (code === 401) {
-      type = 'error';
-      detail = 'HTTP 401: You are not allowed to do this yet. You may need to log in or use the right passkey.';
-    } else if (code === 403) {
-      type = 'error';
-      detail = 'HTTP 403: You are not allowed to do this. Even if you are logged in, you do not have permission.';
-    } else if (code === 404) {
-      type = 'error';
-      detail = 'HTTP 404: The thing you asked for was not found. It might not exist or was deleted.';
-    } else if (code === 409) {
-      type = 'warning';
-      detail = 'HTTP 409: There is already something like this. For example, you may be trying to register a passkey that already exists.';
-    } else if (code >= 500) {
-      type = 'error';
-      detail = `HTTP ${code}: The server had a problem and could not finish the request. This is not your fault.`;
-    } else {
-      type = 'warning';
-      detail = `HTTP ${code}: The server sent an unexpected response. Something unusual happened.`;
+  // Lane colors (light tints per actor)
+  laneSecure:  '#eff6ff',
+  laneBrowser: '#f0fdf4',
+  laneBackend: '#fffbeb',
+  laneDb:      '#faf5ff',
+
+  // Actor header colors
+  actorSecure:  '#bfdbfe',
+  actorBrowser: '#bbf7d0',
+  actorBackend: '#fde68a',
+  actorDb:      '#e9d5ff',
+
+  // Arrow colors by category
+  arrowHttp:    '#0969da',
+  arrowWebAuthn:'#1a7f37',
+  arrowDb:      '#8250df',
+  arrowInternal:'#57606a',
+  arrowCrypto:  '#bc4c00',
+};
+
+// ─── Actors ────────────────────────────────────────────────────────────────────
+const ACTORS = ['SecureStorage', 'Browser', 'Backend', 'Database'];
+
+const ACTOR_META = {
+  SecureStorage: {
+    label: 'Platform Secure Storage',
+    sublabel: 'TPM / Secure Enclave',
+    icon: '🔐',
+    color: T.actorSecure,
+    laneColor: T.laneSecure,
+    textColor: '#1d4ed8',
+    borderColor: '#93c5fd',
+  },
+  Browser: {
+    label: 'Browser',
+    sublabel: 'WebAuthn API',
+    icon: '🌐',
+    color: T.actorBrowser,
+    laneColor: T.laneBrowser,
+    textColor: '#15803d',
+    borderColor: '#86efac',
+  },
+  Backend: {
+    label: 'Backend Server',
+    sublabel: 'Node.js / Express',
+    icon: '⚙️',
+    color: T.actorBackend,
+    laneColor: T.laneBackend,
+    textColor: '#92400e',
+    borderColor: '#fcd34d',
+  },
+  Database: {
+    label: 'Database',
+    sublabel: 'MySQL / Storage',
+    icon: '🗄️',
+    color: T.actorDb,
+    laneColor: T.laneDb,
+    textColor: '#6b21a8',
+    borderColor: '#c4b5fd',
+  },
+};
+
+// ─── Synthetic event templates ─────────────────────────────────────────────────
+// These fill in the "missing" arrows the raw JSON doesn't capture:
+// • Browser → SecureStorage  (challenge / create request)
+// • SecureStorage → Browser  (credential / assertion)
+// • Backend → Database       (DB reads/writes)
+// • Database → Backend       (DB responses)
+
+function buildSyntheticEvents(rawEvents, flowType) {
+  const synthetic = [];
+  const hasCapturedDbTrace = rawEvents.some((event) => {
+    const step = String(event?.step || '').toLowerCase();
+    return step.startsWith('db.query.') || step.startsWith('db.result.');
+  });
+
+  rawEvents.forEach((ev) => {
+    const step = (ev.step || '').toLowerCase();
+    const p = ev.payloadRaw || {};
+
+    // ── Registration: browser calls navigator.credentials.create ─────────────
+    if (step === 'registration.options.received') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-create-req-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'frontend',
+        direction: 'internal',
+        step: 'authenticator.create.request',
+        endpoint: 'navigator.credentials.create()',
+        from: 'Browser',
+        to: 'SecureStorage',
+        label: 'navigator.credentials.create()',
+        sublabel: 'challenge + pubKeyCredParams + rp + user + authenticatorSelection',
+        arrowStyle: 'webauthn',
+        payloadRaw: {
+          type: 'PublicKeyCredentialCreationOptions',
+          challenge: p.challenge,
+          rp: p.rp,
+          user: p.user,
+          pubKeyCredParams: p.pubKeyCredParams,
+          authenticatorSelection: p.authenticatorSelection,
+          attestation: p.attestation,
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'WebAuthn API invoked',
+            detail: 'The browser calls navigator.credentials.create() with the server\'s options. This triggers an OS-level prompt (fingerprint, Face ID, PIN) asking the user to authorize key creation.',
+          },
+          {
+            type: 'info',
+            label: 'Bound to origin',
+            detail: `The new passkey will be cryptographically bound to "${p.rp?.id || 'this site'}". It cannot be used on any other domain — this is the core anti-phishing guarantee.`,
+          },
+          {
+            type: 'info',
+            label: 'User verification required',
+            detail: `authenticatorSelection.userVerification = "${p.authenticatorSelection?.userVerification || 'required'}". The device must confirm the user is physically present (biometric or PIN).`,
+          },
+        ],
+      });
     }
-    annotations.push({ type, label: `HTTP ${code}`, detail });
+
+    // ── Registration: secure storage returns new credential ──────────────────
+    if (step === 'browser.create.completed') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-create-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'frontend',
+        direction: 'internal',
+        step: 'authenticator.create.response',
+        endpoint: 'PublicKeyCredential returned',
+        from: 'SecureStorage',
+        to: 'Browser',
+        label: 'New credential returned',
+        sublabel: `id: ${p.id || '…'} · attestationObject + publicKey`,
+        arrowStyle: 'webauthn',
+        payloadRaw: {
+          credentialId: p.id,
+          type: p.type || 'public-key',
+          hasResponse: p.hasResponse,
+          note: 'attestationObject, authenticatorData, clientDataJSON, publicKey present in full credential object',
+        },
+        summaryAnnotations: [
+          {
+            type: 'success',
+            label: 'Key pair generated',
+            detail: 'The secure enclave generated a fresh EC P-256 key pair. The private key is stored inside hardware and will never leave the device.',
+          },
+          {
+            type: 'info',
+            label: 'Attestation produced',
+            detail: 'The authenticator produced an attestationObject containing the new public key, authenticatorData (flags + counter + rpIdHash), and an attestation statement.',
+          },
+          {
+            type: 'info',
+            label: 'Counter initialized',
+            detail: 'A sign-count starting at 0 is embedded in authenticatorData. On every future login this counter increments, helping the server detect cloned credentials.',
+          },
+        ],
+      });
+    }
+
+    // ── Authentication: browser calls navigator.credentials.get ──────────────
+    if (step === 'authentication.options.received') {
+      const creds = p.allowCredentials || [];
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-get-req-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'frontend',
+        direction: 'internal',
+        step: 'authenticator.get.request',
+        endpoint: 'navigator.credentials.get()',
+        from: 'Browser',
+        to: 'SecureStorage',
+        label: 'navigator.credentials.get()',
+        sublabel: `challenge + ${creds.length} allowed credential${creds.length !== 1 ? 's' : ''} · userVerification: ${p.userVerification || 'required'}`,
+        arrowStyle: 'webauthn',
+        payloadRaw: {
+          type: 'PublicKeyCredentialRequestOptions',
+          challenge: p.challenge,
+          allowCredentials: p.allowCredentials,
+          userVerification: p.userVerification,
+          timeout: p.timeout,
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Assertion requested',
+            detail: `The browser forwards the server challenge and ${creds.length} allowed credential ID${creds.length !== 1 ? 's' : ''} to the platform authenticator. The OS shows a sign-in prompt.`,
+          },
+          {
+            type: 'info',
+            label: 'Challenge forwarded',
+            detail: 'The nonce from the server is embedded in clientDataJSON and will be signed. This proves the response is fresh and cannot be replayed.',
+          },
+        ],
+      });
+    }
+
+    // ── Authentication: secure storage returns signed assertion ───────────────
+    if (step === 'browser.get.completed') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-get-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'frontend',
+        direction: 'internal',
+        step: 'authenticator.get.response',
+        endpoint: 'Signed assertion returned',
+        from: 'SecureStorage',
+        to: 'Browser',
+        label: 'Signed assertion returned',
+        sublabel: `id: ${p.id || '…'} · authenticatorData + clientDataJSON + signature`,
+        arrowStyle: 'webauthn',
+        payloadRaw: {
+          credentialId: p.id,
+          type: p.type || 'public-key',
+          hasResponse: p.hasResponse,
+          note: 'authenticatorData, clientDataJSON, signature, userHandle present in full assertion',
+        },
+        summaryAnnotations: [
+          {
+            type: 'success',
+            label: 'Private key signed',
+            detail: 'The secure enclave used the private key to sign (authenticatorData ‖ hash(clientDataJSON)). The signature proves possession of the private key without ever revealing it.',
+          },
+          {
+            type: 'info',
+            label: 'Counter incremented',
+            detail: 'authenticatorData contains an updated sign-count. The server will compare this to the stored value to detect credential cloning.',
+          },
+          {
+            type: 'info',
+            label: 'User handle included',
+            detail: 'The userHandle (opaque user ID) is returned so the server can identify the account even in username-less (discoverable credential) flows.',
+          },
+        ],
+      });
+    }
+
+    // ── Registration: backend looks up / creates user in DB ──────────────────
+    if (!hasCapturedDbTrace && step === 'registration.start' && ev.source === 'backend') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-lookup-reg-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.users.lookupOrCreate',
+        endpoint: 'DB: SELECT / INSERT users',
+        from: 'Backend',
+        to: 'Database',
+        label: 'SELECT user by email',
+        sublabel: 'Look up account · create if new · generate userId',
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email,
+          operation: 'select',
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Account lookup',
+            detail: 'The server queries the database for an existing account with this email. If none exists a new row is inserted. The userId becomes the opaque userHandle stored in the passkey.',
+          },
+        ],
+      });
+
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-lookup-reg-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.result.users.lookupOrCreate',
+        endpoint: 'DB: users result',
+        from: 'Database',
+        to: 'Backend',
+        label: 'User record returned',
+        sublabel: 'userId · existing credentials list',
+        arrowStyle: 'db',
+        payloadRaw: {
+          ok: true,
+          rowCount: 1,
+          error: null,
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Challenge stored',
+            detail: 'The server will now generate a random challenge, store it in the database against this user, and return it in the registration options.',
+          },
+        ],
+      });
+    }
+
+    // ── Registration: backend stores challenge before returning options ───────
+    if (!hasCapturedDbTrace && step === 'http.response' && ev.source === 'backend' && ev.endpoint === '/webauthn/register') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-store-challenge-reg-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.users.storeChallenge',
+        endpoint: 'DB: UPDATE users SET challenge',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Store registration challenge',
+        sublabel: `UPDATE users SET challenge = "…" WHERE email = "${p.user?.name || ''}"`,
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.user?.name || p.email || null,
+          operation: 'update',
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Challenge persisted',
+            detail: 'The one-time challenge is written to the database now. During /register/complete the server will read it back, compare it to what the authenticator signed, and then delete it.',
+          },
+        ],
+      });
+    }
+
+    // ── Registration complete: backend reads challenge + verifies ─────────────
+    if (!hasCapturedDbTrace && step === 'registration.complete.received' && ev.source === 'backend') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-read-challenge-reg-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.users.readChallengeForVerify',
+        endpoint: 'DB: SELECT challenge FROM users',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Fetch stored challenge',
+        sublabel: `SELECT challenge WHERE email = "${p.email}"`,
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email,
+          operation: 'select',
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Challenge retrieved',
+            detail: 'The server fetches the challenge it stored earlier. It will compare this against the challenge embedded in clientDataJSON that the authenticator signed.',
+          },
+        ],
+      });
+
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-read-challenge-reg-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.result.users.readChallengeForVerify',
+        endpoint: 'DB: challenge result',
+        from: 'Database',
+        to: 'Backend',
+        label: 'Challenge row returned',
+        sublabel: 'challenge · user_id · existing credential list',
+        arrowStyle: 'db',
+        payloadRaw: { ok: true, rowCount: 1, error: null },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Ready to verify',
+            detail: 'With the stored challenge in hand the server invokes @simplewebauthn/server verifyRegistrationResponse() to validate the attestationObject, publicKey, and origin.',
+          },
+        ],
+      });
+    }
+
+    // ── Registration complete: store credential ───────────────────────────────
+    if (!hasCapturedDbTrace && step === 'registration.verify.result' && ev.source === 'backend' && p.verified) {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-store-cred-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.credentials.insert',
+        endpoint: 'DB: INSERT credentials',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Persist new credential',
+        sublabel: 'INSERT INTO credentials (credentialId, publicKey, counter, transports)',
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email || null,
+          operation: 'insert',
+        },
+        summaryAnnotations: [
+          {
+            type: 'success',
+            label: 'Public key stored',
+            detail: 'Only the public key is stored — never the private key. On future logins the server uses this public key to verify the cryptographic signature the device produces.',
+          },
+          {
+            type: 'info',
+            label: 'Counter initialized',
+            detail: 'The counter is set to 0. Each authentication will update this value, enabling the server to detect if the passkey was cloned to another device.',
+          },
+        ],
+      });
+
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-store-cred-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.result.credentials.insert',
+        endpoint: 'DB: INSERT confirmed',
+        from: 'Database',
+        to: 'Backend',
+        label: 'Credential saved ✓',
+        sublabel: 'INSERT OK · challenge cleared from users table',
+        arrowStyle: 'db',
+        payloadRaw: { ok: true, credentialId: p.credentialId || null, error: null },
+        summaryAnnotations: [
+          {
+            type: 'success',
+            label: 'Registration complete',
+            detail: 'The credential is now permanently stored. The one-time challenge is cleared from the users table. The server returns { success: true } to the browser.',
+          },
+        ],
+      });
+    }
+
+    // ── Authentication: backend reads user + credentials ──────────────────────
+    if (!hasCapturedDbTrace && step === 'authentication.start' && ev.source === 'backend') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-lookup-auth-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.credentials.listForUser',
+        endpoint: 'DB: SELECT credentials',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Fetch user credentials',
+        sublabel: `SELECT * FROM credentials JOIN users WHERE email = "${p.email}"`,
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email,
+          operation: 'select',
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Credential list fetched',
+            detail: 'The server looks up every passkey registered to this email. Each one (credentialId + transports) goes into the allowCredentials array returned to the browser.',
+          },
+        ],
+      });
+
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-lookup-auth-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.result.credentials.listForUser',
+        endpoint: 'DB: credentials result',
+        from: 'Database',
+        to: 'Backend',
+        label: 'Credential rows returned',
+        sublabel: 'credentialId · transports · publicKey · counter',
+        arrowStyle: 'db',
+        payloadRaw: {
+          ok: true,
+          rowCount: Array.isArray(p.allowCredentials) ? p.allowCredentials.length : 1,
+          error: null,
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Ready to issue challenge',
+            detail: 'With the credential list the server generates a fresh random challenge, stores it, and returns the authentication options.',
+          },
+        ],
+      });
+    }
+
+    // ── Authentication: store challenge ───────────────────────────────────────
+    if (!hasCapturedDbTrace && step === 'http.response' && ev.source === 'backend' && ev.endpoint === '/webauthn/authenticate') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-store-challenge-auth-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.users.storeChallengeAuth',
+        endpoint: 'DB: UPDATE users SET challenge (auth)',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Store auth challenge',
+        sublabel: `UPDATE users SET challenge = "…" WHERE email = "${p.allowCredentials?.[0]?.id || '?'}"`,
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email || null,
+          operation: 'update',
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Challenge persisted',
+            detail: 'Storing the challenge server-side prevents replay attacks. The authenticator will sign it; the server will compare the signed value against this stored copy.',
+          },
+        ],
+      });
+    }
+
+    // ── Authentication complete: read challenge + publicKey ───────────────────
+    if (!hasCapturedDbTrace && step === 'authentication.complete.received' && ev.source === 'backend') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-read-auth-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.users.readForAuthVerify',
+        endpoint: 'DB: SELECT challenge + credential',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Fetch challenge & public key',
+        sublabel: `SELECT challenge, public_key, counter WHERE email = "${p.email}"`,
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email,
+          operation: 'select',
+        },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Data fetched for verify',
+            detail: 'The server needs the stored challenge (to compare with clientDataJSON), the stored public key (to verify the signature), and the stored counter (to check for cloning).',
+          },
+        ],
+      });
+
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-read-auth-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.result.users.readForAuthVerify',
+        endpoint: 'DB: verify data returned',
+        from: 'Database',
+        to: 'Backend',
+        label: 'Challenge + public key returned',
+        sublabel: 'challenge · public_key (COSE) · counter',
+        arrowStyle: 'db',
+        payloadRaw: { ok: true, rowCount: 1, error: null },
+        summaryAnnotations: [
+          {
+            type: 'info',
+            label: 'Verification inputs ready',
+            detail: 'Now calling @simplewebauthn/server verifyAuthenticationResponse() with the assertion, stored public key, stored challenge, and stored counter.',
+          },
+        ],
+      });
+    }
+
+    // ── Authentication: update counter after verify ───────────────────────────
+    if (!hasCapturedDbTrace && step === 'authentication.verify.result' && ev.source === 'backend') {
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-update-counter-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.query.users.updateCounterAndClearChallenge',
+        endpoint: 'DB: UPDATE counter + clear challenge',
+        from: 'Backend',
+        to: 'Database',
+        label: 'Update counter · clear challenge',
+        sublabel: `SET counter = ${p.nextCounter ?? '?'}, challenge = NULL`,
+        arrowStyle: 'db',
+        payloadRaw: {
+          email: p.email || null,
+          operation: 'update',
+          storedCounter: p.storedCounter,
+          reportedCounter: p.reportedCounter,
+          nextCounter: p.nextCounter,
+          counterDidRegress: p.counterDidRegress,
+        },
+        summaryAnnotations: [
+          {
+            type: p.counterDidRegress ? 'warning' : 'success',
+            label: p.counterDidRegress ? 'Counter regression — preserved stored value' : 'Counter advanced',
+            detail: p.counterDidRegress
+              ? `Reported counter (${p.reportedCounter}) < stored (${p.storedCounter}). Server preserves the higher value. Possible credential clone.`
+              : `Counter updated from ${p.storedCounter} → ${p.nextCounter}. One-time challenge cleared to prevent replay.`,
+          },
+        ],
+      });
+
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-db-update-counter-resp-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'internal',
+        step: 'db.result.users.updateCounterAndClearChallenge',
+        endpoint: 'DB: UPDATE confirmed',
+        from: 'Database',
+        to: 'Backend',
+        label: 'Update confirmed ✓',
+        sublabel: 'affectedRows: 1',
+        arrowStyle: 'db',
+        payloadRaw: { ok: true, email: p.email || null, nextCounter: p.nextCounter, error: null },
+        summaryAnnotations: [
+          {
+            type: 'success',
+            label: 'DB write complete',
+            detail: 'Counter and challenge persisted. Server now issues JWT access + refresh cookies and returns { success: true }.',
+          },
+        ],
+      });
+    }
+  });
+
+  return synthetic;
+}
+
+// ─── Merge raw + synthetic events into a single timeline ─────────────────────
+function mergeAndSortEvents(rawEvents, syntheticEvents) {
+  const eventSortPriority = (event) => {
+    const step = String(event?.step || '').toLowerCase();
+    if (step === 'http.request') return 0;
+    if (step.endsWith('.start')) return 1;
+    if (step.endsWith('.complete.received')) return 2;
+    if (step.startsWith('db.query.')) return 3;
+    if (step.startsWith('db.result.')) return 4;
+    if (step.endsWith('.verify.result')) return 5;
+    if (step === 'http.response') return 6;
+    return 7;
+  };
+  // Build a map: after which raw event should each synthetic appear?
+  // Strategy: synthetic events are keyed to the raw event they follow.
+  // We insert them right after their parent.
+
+  const result = [];
+  const synByParentId = {};
+  syntheticEvents.forEach((s) => {
+    // The uiId of the raw parent is embedded in the synthetic _id
+    const match = s._id.match(/-([^-]+)$/);
+    const key = s._id; // unique, insert after step match
+    if (!synByParentId[s.step]) synByParentId[s.step] = [];
+    synByParentId[s.step].push(s);
+  });
+
+  // Just sort everything by timestamp and handle "ties" by preferring raw→synthetic order
+  const combined = [
+    ...rawEvents.map((e) => ({ ...e, _synthetic: false })),
+    ...syntheticEvents,
+  ].sort((a, b) => {
+    const ta = Date.parse(a.timestamp || '') || 0;
+    const tb = Date.parse(b.timestamp || '') || 0;
+    if (ta !== tb) return ta - tb;
+
+    // Keep captured events before inferred synthetic events at same timestamp.
+    if (a._synthetic !== b._synthetic) return a._synthetic ? 1 : -1;
+
+    // For same timestamp + same capture type, enforce protocol order.
+    const pa = eventSortPriority(a);
+    const pb = eventSortPriority(b);
+    if (pa !== pb) return pa - pb;
+
+    return 0;
+  });
+
+  // Remove duplicate backend internal events that mirror frontend start events
+  const seenStepSources = new Set();
+  const filtered = combined.filter((ev) => {
+    const key = `${ev.source}-${ev.direction}-${ev.step}`;
+    if (
+      ev.source === 'backend' &&
+      ev.direction === 'internal' &&
+      (ev.step || '').endsWith('.start') &&
+      !ev._synthetic
+    ) {
+      if (seenStepSources.has(ev.step + '-frontend')) return false;
+    }
+    if (ev.source === 'frontend' && ev.direction === 'internal' && (ev.step || '').endsWith('.start')) {
+      seenStepSources.add(ev.step + '-frontend');
+    }
+    return true;
+  });
+
+  // Mark frontend inbound events that are simply the client-side receipt of an already-captured backend http.response.
+  const backendHttpResponses = filtered
+    .filter((ev) => !ev._synthetic && ev.source === 'backend' && ev.direction === 'outbound' && ev.step === 'http.response' && ev.endpoint)
+    .map((ev) => ({
+      endpoint: ev.endpoint,
+      ts: Date.parse(ev.timestamp || '') || 0,
+    }));
+
+  return filtered.map((ev) => {
+    if (ev._synthetic) return ev;
+    if (!(ev.source === 'frontend' && ev.direction === 'inbound' && ev.endpoint)) return ev;
+
+    const ts = Date.parse(ev.timestamp || '') || 0;
+    const mirrored = backendHttpResponses.some((resp) => resp.endpoint === ev.endpoint && Math.abs(resp.ts - ts) <= 2000);
+    return mirrored ? { ...ev, _mirroredHttpResponse: true } : ev;
+  });
+}
+
+// ─── Determine from/to for raw events ────────────────────────────────────────
+function routeRawEvent(ev) {
+  if (ev.from && ev.to) return { from: ev.from, to: ev.to };
+  if (ev._mirroredHttpResponse) return { from: 'Browser', to: 'Browser' };
+
+  const step = (ev.step || '').toLowerCase();
+  const direction = (ev.direction || '').toLowerCase();
+  const source = (ev.source || '').toLowerCase();
+  const endpoint = (ev.endpoint || '').toLowerCase();
+
+  if (step.startsWith('browser.') || endpoint.startsWith('navigator.credentials.')) {
+    return step.endsWith('.completed')
+      ? { from: 'SecureStorage', to: 'Browser' }
+      : { from: 'Browser', to: 'SecureStorage' };
+  }
+  if (step.startsWith('db.query.')) return { from: 'Backend', to: 'Database' };
+  if (step.startsWith('db.result.')) return { from: 'Database', to: 'Backend' };
+
+  if (source === 'backend' && direction === 'inbound') return { from: 'Browser', to: 'Backend' };
+  if (source === 'backend' && direction === 'outbound') return { from: 'Backend', to: 'Browser' };
+  if (source === 'frontend' && direction === 'outbound') return { from: 'Browser', to: 'Backend' };
+  if (source === 'frontend' && direction === 'inbound') return { from: 'Backend', to: 'Browser' };
+  if (source === 'backend' && direction === 'internal') {
+    return { from: 'Backend', to: 'Backend' }; // will be visually styled as a note
+  }
+  if (source === 'frontend' && direction === 'internal') return { from: 'Browser', to: 'Browser' };
+  return { from: 'Browser', to: 'Backend' };
+}
+
+// ─── Arrow style inference ────────────────────────────────────────────────────
+function inferArrowStyle(ev) {
+  if (ev.arrowStyle) return ev.arrowStyle;
+  if (ev._mirroredHttpResponse) return 'internal';
+  const step = (ev.step || '').toLowerCase();
+  if (step.startsWith('db.')) return 'db';
+  if (step.startsWith('browser.') || step.startsWith('authenticator.') || (ev.endpoint || '').startsWith('navigator.')) return 'webauthn';
+  if ((ev.endpoint || '').startsWith('/webauthn/')) return 'http';
+  return 'internal';
+}
+
+// ─── Arrow color map ──────────────────────────────────────────────────────────
+const ARROW_COLORS = {
+  http:     T.arrowHttp,
+  webauthn: T.arrowWebAuthn,
+  db:       T.arrowDb,
+  internal: T.arrowInternal,
+  crypto:   T.arrowCrypto,
+};
+
+// ─── Build human label for arrow ─────────────────────────────────────────────
+function buildLabel(ev) {
+  if (ev.label) return ev.label;
+  const step = ev.step || ev.endpoint || ev.type || 'event';
+  return step;
+}
+
+function buildSublabel(ev) {
+  if (ev.sublabel) return ev.sublabel;
+  const p = ev.payloadRaw || {};
+  const parts = [];
+  if (p.email) parts.push(`email: ${p.email}`);
+  if (p.challenge) parts.push(`challenge: ${String(p.challenge).slice(0, 12)}…`);
+  if (p.credentialId) parts.push(`credentialId: ${String(p.credentialId).slice(0, 12)}…`);
+  if (p.success !== undefined) parts.push(`success: ${p.success}`);
+  if (p.verified !== undefined) parts.push(`verified: ${p.verified}`);
+  if (Array.isArray(p.allowCredentials)) parts.push(`${p.allowCredentials.length} credential(s)`);
+  return parts.slice(0, 3).join(' · ');
+}
+
+// ─── Layout constants ─────────────────────────────────────────────────────────
+const ACTOR_W = 170;
+const ACTOR_H = 68;
+const LANE_PAD = 20;
+const HEADER_H = 88;
+const LIFELINE_TOP = HEADER_H + 10;
+
+// Each row has: arrow line + label box above + payload box below the arrow
+// We compute row heights dynamically based on payload field count.
+const ARROW_ZONE = 36;        // pixels from top of row to arrow line (label sits above)
+const PAYLOAD_BOX_PAD = 8;    // padding inside payload box
+const PAYLOAD_LINE_H = 13;    // height per payload field line
+const PAYLOAD_TOP_GAP = 6;    // gap between arrow line and top of payload box
+const LABEL_FONT = 10;
+const SUB_FONT = 8;
+const ROW_SPACING = 18;       // extra gap between rows
+const PAYLOAD_VALUE_MAX_CHARS = 22;
+const PAYLOAD_LINE_MAX_CHARS = 34;
+
+function actorX(actorIdx) {
+  return LANE_PAD + actorIdx * (ACTOR_W + LANE_PAD) + ACTOR_W / 2;
+}
+
+function actorIndex(actorName) {
+  const normalized = String(actorName || '').trim().toLowerCase();
+  return ACTORS.findIndex((actor) => actor.toLowerCase() === normalized);
+}
+
+// Build a short list of payload preview lines for the on-diagram box
+// Returns array of strings, max 5 lines
+function buildPayloadPreviewLines(ev) {
+  const p = ev.payloadRaw;
+  if (!p || typeof p !== 'object') return [];
+  const lines = [];
+  const keys = Object.keys(p);
+  const trimWithEllipsis = (input, maxChars) => {
+    const str = String(input);
+    return str.length > maxChars ? `${str.slice(0, maxChars - 1)}…` : str;
+  };
+
+  for (const k of keys) {
+    if (lines.length >= 5) break;
+    const v = p[k];
+    let vStr = '';
+    if (typeof v === 'string') {
+      vStr = trimWithEllipsis(v, PAYLOAD_VALUE_MAX_CHARS);
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      vStr = String(v);
+    } else if (Array.isArray(v)) {
+      vStr = `[${v.length} items]`;
+    } else if (typeof v === 'object' && v !== null) {
+      vStr = '{…}';
+    }
+    const keyLabel = trimWithEllipsis(k, 14);
+    lines.push(trimWithEllipsis(`${keyLabel}: ${vStr}`, PAYLOAD_LINE_MAX_CHARS));
+  }
+  return lines;
+}
+
+function estimateWrappedLineCount(text, maxChars = 26, maxLines = 3) {
+  if (!text) return 1;
+  const words = String(text).split(' ');
+  let lineCount = 1;
+  let current = '';
+  for (const word of words) {
+    const next = (current ? `${current} ${word}` : word);
+    if (next.length > maxChars && current) {
+      lineCount += 1;
+      current = word;
+      if (lineCount >= maxLines) return maxLines;
+    } else {
+      current = next;
+    }
+  }
+  return Math.min(lineCount, maxLines);
+}
+
+// Compute the pixel height that a given event row needs
+function rowHeight(ev) {
+  const { from, to } = routeRawEvent(ev);
+  const fromIdx = actorIndex(from);
+  const toIdx = actorIndex(to);
+  const isSelf = fromIdx === toIdx || fromIdx < 0 || toIdx < 0;
+
+  const labelLineCount = estimateWrappedLineCount(buildLabel(ev), 26, 3);
+  const sublabel = buildSublabel(ev);
+  const previewLines = buildPayloadPreviewLines(ev);
+  const sublabelLineCount = previewLines.length === 0 ? estimateWrappedLineCount(sublabel, 32, 3) : 0;
+  const textBlockH = labelLineCount * 13 + (sublabelLineCount > 0 ? sublabelLineCount * 11 + 4 : 0);
+
+  const payloadBoxH = previewLines.length > 0
+    ? PAYLOAD_BOX_PAD * 2 + previewLines.length * PAYLOAD_LINE_H
+    : 0;
+
+  if (isSelf) {
+    const noteH = PAYLOAD_BOX_PAD * 2 + textBlockH + (previewLines.length > 0 ? previewLines.length * PAYLOAD_LINE_H + 6 : 0);
+    return ARROW_ZONE + noteH + 12 + ROW_SPACING;
   }
 
-  // ── Direction context ─────────────────────────────────────────────────────
-  if (event.direction === 'inbound' && event.source === 'backend') {
-    annotations.push({
-      type: 'info',
-      label: 'Backend received request',
-      detail: 'The server is receiving this event — it will validate inputs and perform the next step in the WebAuthn ceremony.',
-    });
+  return ARROW_ZONE + Math.max(14, textBlockH) + payloadBoxH + PAYLOAD_TOP_GAP + ROW_SPACING;
+}
+
+// Compute cumulative Y offsets for each event row
+function computeRowOffsets(events) {
+  const offsets = [];
+  let y = HEADER_H;
+  for (const ev of events) {
+    offsets.push(y);
+    y += rowHeight(ev);
   }
-  if (event.direction === 'outbound' && event.source === 'backend') {
-    annotations.push({
-      type: 'info',
-      label: 'Backend sending response',
-      detail: 'The server is dispatching this response back to the browser. The frontend will process it and continue the flow.',
-    });
+  return { offsets, totalH: y + ACTOR_H + 24 };
+}
+
+// ─── SVG sequence diagram renderer ────────────────────────────────────────────
+function SequenceDiagram({ events, selectedIdx, onSelect }) {
+  if (!events || events.length === 0) return null;
+
+  const totalWidth = ACTORS.length * (ACTOR_W + LANE_PAD) + LANE_PAD;
+  const actorPositions = ACTORS.map((_, i) => actorX(i));
+  const { offsets, totalH } = computeRowOffsets(events);
+  const diagramH = totalH;
+
+  function wrapText(text, maxChars = 26) {
+    if (!text) return [''];
+    const words = String(text).split(' ');
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+      if ((cur + ' ' + w).trim().length > maxChars && cur) {
+        lines.push(cur.trim());
+        cur = w;
+      } else {
+        cur = (cur + ' ' + w).trim();
+      }
+    }
+    if (cur) lines.push(cur.trim());
+    return lines.slice(0, 3);
   }
-  if (event.direction === 'inbound' && event.source === 'frontend') {
+
+  return (
+    <svg
+      viewBox={`0 0 ${totalWidth} ${diagramH}`}
+      width="100%"
+      style={{ display: 'block', minHeight: diagramH, fontFamily: "'IBM Plex Mono', 'JetBrains Mono', monospace" }}
+    >
+      <defs>
+        {Object.entries(ARROW_COLORS).map(([style, color]) => (
+          <marker key={style} id={`arrow-${style}`} markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill={color} />
+          </marker>
+        ))}
+        {/* Drop shadow for selected boxes */}
+        <filter id="sel-shadow" x="-10%" y="-10%" width="120%" height="120%">
+          <feDropShadow dx="0" dy="2" stdDeviation="3" floodColor="#0969da" floodOpacity="0.25" />
+        </filter>
+      </defs>
+
+      {/* White diagram background */}
+      <rect x={0} y={0} width={totalWidth} height={diagramH} fill="#ffffff" />
+
+      {/* Lane backgrounds */}
+      {ACTORS.map((actor, i) => (
+        <rect
+          key={actor + '-lane'}
+          x={LANE_PAD + i * (ACTOR_W + LANE_PAD)}
+          y={0}
+          width={ACTOR_W}
+          height={diagramH}
+          fill={ACTOR_META[actor].laneColor}
+        />
+      ))}
+
+      {/* Lane separator lines */}
+      {ACTORS.map((actor, i) => (
+        <line
+          key={actor + '-sep'}
+          x1={LANE_PAD + i * (ACTOR_W + LANE_PAD)}
+          y1={0}
+          x2={LANE_PAD + i * (ACTOR_W + LANE_PAD)}
+          y2={diagramH}
+          stroke={T.border}
+          strokeWidth={0.5}
+        />
+      ))}
+
+      {/* Actor header boxes */}
+      {ACTORS.map((actor, i) => {
+        const cx = actorPositions[i];
+        const meta = ACTOR_META[actor];
+        return (
+          <g key={actor + '-header'}>
+            <rect
+              x={cx - ACTOR_W / 2 + 6}
+              y={8}
+              width={ACTOR_W - 12}
+              height={ACTOR_H}
+              rx={8}
+              fill={meta.color}
+              stroke={meta.borderColor}
+              strokeWidth={1.5}
+            />
+            <text x={cx} y={32} textAnchor="middle" fontSize={20}>{meta.icon}</text>
+            <text x={cx} y={52} textAnchor="middle" fontSize={11} fontWeight="700" fill={meta.textColor}>{meta.label}</text>
+            <text x={cx} y={66} textAnchor="middle" fontSize={9} fill={meta.textColor} opacity={0.65}>{meta.sublabel}</text>
+          </g>
+        );
+      })}
+
+      {/* Lifelines */}
+      {ACTORS.map((actor, i) => (
+        <line
+          key={actor + '-lifeline'}
+          x1={actorPositions[i]}
+          y1={LIFELINE_TOP}
+          x2={actorPositions[i]}
+          y2={diagramH - 30}
+          stroke={ACTOR_META[actor].borderColor}
+          strokeWidth={1.5}
+          strokeOpacity={0.5}
+          strokeDasharray="5,7"
+        />
+      ))}
+
+      {/* Events / arrows */}
+      {events.map((ev, idx) => {
+        const { from, to } = routeRawEvent(ev);
+        const fromIdx = actorIndex(from);
+        const toIdx = actorIndex(to);
+        const rowY = offsets[idx];
+        const rh = rowHeight(ev);
+        const arrowColor = ARROW_COLORS[inferArrowStyle(ev)] || T.arrowInternal;
+        const label = buildLabel(ev);
+        const sublabel = buildSublabel(ev);
+        const isSelected = idx === selectedIdx;
+        const isSelf = fromIdx === toIdx || fromIdx < 0 || toIdx < 0;
+
+        const x1 = fromIdx >= 0 ? actorPositions[fromIdx] : actorPositions[1];
+        const x2 = toIdx >= 0 ? actorPositions[toIdx] : actorPositions[1];
+
+        const labelLines = wrapText(label, 26);
+        const sublabelLines = sublabel ? wrapText(sublabel, 32) : [];
+        const previewLines = buildPayloadPreviewLines(ev);
+        const selfSublabelLines = previewLines.length > 0 ? [] : sublabelLines;
+
+        // Arrow sits ARROW_ZONE px below the top of the row
+        const arrowY = rowY + ARROW_ZONE;
+
+        // Payload box: starts PAYLOAD_TOP_GAP below arrow, floats over lane
+        const payloadBoxY = arrowY + PAYLOAD_TOP_GAP + 4;
+        const payloadBoxH = previewLines.length > 0
+          ? PAYLOAD_BOX_PAD * 2 + previewLines.length * PAYLOAD_LINE_H
+          : 0;
+
+        // Box color from arrow style
+        const boxBg = {
+          http: '#eff6ff',
+          webauthn: '#f0fdf4',
+          db: '#faf5ff',
+          internal: '#f8f9fa',
+          crypto: '#fff7ed',
+        }[inferArrowStyle(ev)] || '#f8f9fa';
+
+        // Self / note box
+        if (isSelf) {
+          const laneIdx = fromIdx >= 0 ? fromIdx : (toIdx >= 0 ? toIdx : 1);
+          const laneX = LANE_PAD + laneIdx * (ACTOR_W + LANE_PAD);
+          const noteW = ACTOR_W - 16;
+          const noteX = laneX + (ACTOR_W - noteW) / 2;
+          const cx = noteX + noteW / 2;
+          const noteH = PAYLOAD_BOX_PAD * 2
+            + labelLines.length * 13
+            + (selfSublabelLines.length > 0 ? selfSublabelLines.length * 11 + 4 : 0)
+            + (previewLines.length > 0 ? previewLines.length * PAYLOAD_LINE_H + 6 : 0);
+
+          return (
+            <g key={ev.uiId || idx} onClick={() => onSelect(idx)} style={{ cursor: 'pointer' }}>
+              {/* Row hover band */}
+              <rect x={0} y={rowY} width={totalWidth} height={rh} fill={isSelected ? arrowColor : 'transparent'} opacity={0.04} />
+              {isSelected && (
+                <rect x={0} y={rowY} width={totalWidth} height={rh} fill="none"
+                  stroke={arrowColor} strokeWidth={1.5} strokeOpacity={0.3} />
+              )}
+              {/* Note box */}
+              <rect x={noteX} y={arrowY - 4} width={noteW} height={noteH + 8} rx={6}
+                fill={isSelected ? boxBg : '#f8f9fa'}
+                stroke={isSelected ? arrowColor : T.border}
+                strokeWidth={isSelected ? 2 : 1}
+                filter={isSelected ? 'url(#sel-shadow)' : undefined}
+              />
+              {labelLines.map((ln, li) => (
+                <text key={li} x={cx} y={arrowY + 10 + li * 13}
+                  textAnchor="middle" fontSize={LABEL_FONT} fill={arrowColor} fontWeight="700">{ln}</text>
+              ))}
+              {selfSublabelLines.map((ln, li) => (
+                <text key={'s' + li} x={cx}
+                  y={arrowY + 10 + labelLines.length * 13 + li * 11 + 2}
+                  textAnchor="middle" fontSize={SUB_FONT} fill={T.textMuted}>{ln}</text>
+              ))}
+              {previewLines.map((ln, li) => (
+                <text key={'p' + li} x={noteX + PAYLOAD_BOX_PAD}
+                  y={arrowY + 10 + labelLines.length * 13 + (selfSublabelLines.length > 0 ? selfSublabelLines.length * 11 + 6 : 0) + li * PAYLOAD_LINE_H + 4}
+                  fontSize={8} fill={T.textMuted} fontFamily="monospace">{ln}</text>
+              ))}
+            </g>
+          );
+        }
+
+        const goesRight = x2 > x1;
+        const arrowHeadX = x2 + (goesRight ? -10 : 10);
+        const midX = (x1 + x2) / 2;
+
+        // Payload box centered between actors, capped to lane boundaries
+        const boxW = Math.min(Math.abs(x2 - x1) - 16, 260);
+        const boxX = midX - boxW / 2;
+
+        // Label sits above arrow line
+        const labelBaseY = arrowY - 6;
+
+        return (
+          <g key={ev.uiId || idx} onClick={() => onSelect(idx)} style={{ cursor: 'pointer' }}>
+            {/* Full-width row selection highlight */}
+            {isSelected && (
+              <rect x={0} y={rowY} width={totalWidth} height={rh}
+                fill={arrowColor} fillOpacity={0.05}
+                stroke={arrowColor} strokeWidth={1} strokeOpacity={0.2}
+              />
+            )}
+
+            {/* Invisible hit area for the whole row */}
+            <rect x={0} y={rowY} width={totalWidth} height={rh} fill="transparent" />
+
+            {/* Arrow line */}
+            <line
+              x1={x1} y1={arrowY} x2={arrowHeadX} y2={arrowY}
+              stroke={arrowColor}
+              strokeWidth={isSelected ? 2.5 : 1.5}
+              markerEnd={`url(#arrow-${inferArrowStyle(ev)})`}
+            />
+
+            {/* Origin dot */}
+            <circle cx={x1} cy={arrowY} r={3.5} fill={arrowColor} />
+
+            {/* Label lines above arrow */}
+            {labelLines.map((ln, li) => (
+              <text
+                key={li}
+                x={midX}
+                y={labelBaseY - (labelLines.length - 1 - li) * 13}
+                textAnchor="middle"
+                fontSize={LABEL_FONT}
+                fontWeight="700"
+                fill={arrowColor}
+                style={{ userSelect: 'none' }}
+              >{ln}</text>
+            ))}
+
+            {/* Payload box — opaque, colored, below arrow line */}
+            {previewLines.length > 0 && (
+              <g>
+                <rect
+                  x={boxX}
+                  y={payloadBoxY}
+                  width={boxW}
+                  height={payloadBoxH}
+                  rx={5}
+                  fill={boxBg}
+                  stroke={isSelected ? arrowColor : T.border}
+                  strokeWidth={isSelected ? 1.5 : 1}
+                  filter={isSelected ? 'url(#sel-shadow)' : undefined}
+                />
+                {previewLines.map((ln, li) => (
+                  <text
+                    key={'p' + li}
+                    x={boxX + PAYLOAD_BOX_PAD}
+                    y={payloadBoxY + PAYLOAD_BOX_PAD + 9 + li * PAYLOAD_LINE_H}
+                    fontSize={8}
+                    fill={T.textMuted}
+                    fontFamily="monospace"
+                    style={{ userSelect: 'none' }}
+                  >{ln}</text>
+                ))}
+              </g>
+            )}
+
+            {/* Sublabel (if no payload box — avoids double-text) */}
+            {previewLines.length === 0 && sublabel && sublabelLines.map((ln, li) => (
+              <text
+                key={'s' + li}
+                x={midX}
+                y={arrowY + 14 + li * 11}
+                textAnchor="middle"
+                fontSize={SUB_FONT}
+                fill={T.textMuted}
+                style={{ userSelect: 'none' }}
+              >{ln}</text>
+            ))}
+          </g>
+        );
+      })}
+
+      {/* Footer actor boxes */}
+      {ACTORS.map((actor, i) => {
+        const cx = actorPositions[i];
+        const meta = ACTOR_META[actor];
+        return (
+          <g key={actor + '-footer'}>
+            <rect
+              x={cx - ACTOR_W / 2 + 6}
+              y={diagramH - ACTOR_H - 8}
+              width={ACTOR_W - 12}
+              height={ACTOR_H}
+              rx={8}
+              fill={meta.color}
+              stroke={meta.borderColor}
+              strokeWidth={1.5}
+            />
+            <text x={cx} y={diagramH - ACTOR_H + 16} textAnchor="middle" fontSize={20}>{meta.icon}</text>
+            <text x={cx} y={diagramH - ACTOR_H + 36} textAnchor="middle" fontSize={11} fontWeight="700" fill={meta.textColor}>{meta.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── Detail panel ─────────────────────────────────────────────────────────────
+const TYPE_STYLES = {
+  success: { border: '#1a7f37', bg: '#dcfce7', dot: '#1a7f37', label: '#1a7f37' },
+  error:   { border: '#cf222e', bg: '#ffeef0', dot: '#cf222e', label: '#cf222e' },
+  warning: { border: '#9a6700', bg: '#fef9c3', dot: '#9a6700', label: '#9a6700' },
+  info:    { border: '#0969da', bg: '#dbeafe', dot: '#0969da', label: '#0969da' },
+};
+
+function AnnotationCard({ ann }) {
+  const s = TYPE_STYLES[ann.type] || TYPE_STYLES.info;
+  return (
+    <div style={{
+      border: `1px solid ${s.border}`,
+      background: s.bg,
+      borderRadius: 8,
+      padding: '10px 12px',
+      marginBottom: 8,
+      display: 'flex',
+      gap: 10,
+      alignItems: 'flex-start',
+    }}>
+      <div style={{
+        width: 8, height: 8, borderRadius: '50%',
+        background: s.dot, flexShrink: 0, marginTop: 4,
+      }} />
+      <div>
+        <div style={{ fontWeight: 700, color: s.label, fontSize: 12, marginBottom: 3 }}>{ann.label}</div>
+        <div style={{ color: '#1f2328', fontSize: 13, lineHeight: 1.55 }}>{ann.detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function generateAnnotations(ev) {
+  if (!ev) return [];
+  if (ev.summaryAnnotations) return ev.summaryAnnotations.slice(0, 3);
+
+  const annotations = [];
+  const p = ev.payloadRaw || {};
+  const step = (ev.step || '').toLowerCase();
+
+  if (ev.method && ev.endpoint) {
     annotations.push({
       type: 'info',
-      label: 'Frontend received response',
-      detail: 'The browser received a response from the server and will now pass the data to the WebAuthn API or update UI state.',
-    });
-  }
-  if (event.direction === 'internal' && event.source === 'frontend' &&
-      event.step && event.step.startsWith('browser.')) {
-    annotations.push({
-      type: 'info',
-      label: 'Browser API call',
-      detail: 'This event represents a call to a browser-native WebAuthn API (navigator.credentials). No network request is made — the browser talks directly to the device authenticator.',
+      label: `${ev.method} ${ev.endpoint}`,
+      detail: ev.method === 'POST'
+        ? `Sends data to the server endpoint "${ev.endpoint}".`
+        : `HTTP ${ev.method} to ${ev.endpoint}.`,
     });
   }
 
-  // ── Email / account ───────────────────────────────────────────────────────
-  const email = p.email || (p.user && p.user.name);
-  if (email) {
+  if (ev.statusCode !== undefined) {
+    const code = ev.statusCode;
     annotations.push({
-      type: 'info',
-      label: 'Account identifier',
-      detail: `This event is associated with the account "${email}". The server uses this to look up registered passkeys and build a personalised challenge.`,
+      type: code >= 200 && code < 300 ? 'success' : code >= 400 ? 'error' : 'warning',
+      label: `HTTP ${code}`,
+      detail: code === 200
+        ? 'The request completed successfully.'
+        : code === 400 ? 'Bad request — a field may be missing or malformed.'
+        : code === 401 ? 'Unauthorized — the passkey or token was not accepted.'
+        : code >= 500 ? 'Server error — an unexpected problem occurred on the backend.'
+        : `HTTP ${code}`,
     });
   }
 
-  // ── Challenge presence ────────────────────────────────────────────────────
+  if (step.startsWith('db.query.')) {
+    annotations.push({
+      type: 'info',
+      label: 'Database query started',
+      detail: 'The backend is asking MySQL for data or updating a row. This is the request side of the database round trip.',
+    });
+  }
+
+  if (step.startsWith('db.result.')) {
+    if (p.ok === true) {
+      annotations.push({
+        type: 'success',
+        label: 'Database response OK',
+        detail: `MySQL returned successfully.${typeof p.rowCount === 'number' ? ` Rows matched: ${p.rowCount}.` : ''}`,
+      });
+    }
+    if (p.error === null) {
+      annotations.push({
+        type: 'info',
+        label: 'No database error',
+        detail: 'error is null, which means the query completed without a MySQL error.',
+      });
+    } else if (typeof p.error === 'string' && p.error.trim().length > 0) {
+      annotations.push({
+        type: 'error',
+        label: 'Database error reported',
+        detail: `MySQL returned an error message: ${p.error}`,
+      });
+    }
+  }
+
   if (p.challenge) {
     annotations.push({
       type: 'info',
-      label: 'Challenge issued',
-      detail: `A fresh cryptographic challenge was generated for this request. It expires after ${p.timeout ? Math.round(p.timeout / 1000) + ' seconds' : 'a short window'} and can only be used once, preventing replay attacks.`,
+      label: 'Challenge present',
+      detail: `A one-time cryptographic nonce. Expires after ${p.timeout ? Math.round(p.timeout / 1000) + 's' : 'a short window'}. Signing it prevents replay attacks.`,
     });
   }
 
-  // ── Credential count in allowCredentials ──────────────────────────────────
-  if (Array.isArray(p.allowCredentials)) {
-    const count = p.allowCredentials.length;
-    if (count === 0) {
-      annotations.push({
-        type: 'warning',
-        label: 'No credentials listed',
-        detail: 'The server returned an empty allowCredentials list. This triggers a "discoverable credential" flow — the browser will prompt the user to pick any passkey stored for this site. Make sure the user has registered at least one passkey.',
-      });
-    } else {
-      annotations.push({
-        type: 'info',
-        label: `${count} passkey${count !== 1 ? 's' : ''} on file`,
-        detail: `The server found ${count} registered passkey${count !== 1 ? 's' : ''} for this account and is presenting ${count !== 1 ? 'them' : 'it'} to the browser. The browser will match one against credentials stored on this device.`,
-      });
-    }
-  }
-
-  // ── browser.get result ────────────────────────────────────────────────────
-  if (event.step === 'browser.get.completed') {
-    if (p.hasResponse === true) {
-      annotations.push({
-        type: 'success',
-        label: 'User gesture completed',
-        detail: 'The user successfully completed the passkey gesture (fingerprint, face scan, or PIN). The browser has received a signed assertion and will now send it to the server.',
-      });
-    } else if (p.hasResponse === false) {
-      annotations.push({
-        type: 'error',
-        label: 'No credential returned',
-        detail: 'The browser\'s navigator.credentials.get() call returned nothing. The user may have cancelled the prompt, or no matching passkey was found on this device.',
-      });
-    }
-    if (p.id) {
-      annotations.push({
-        type: 'info',
-        label: 'Credential identified',
-        detail: `The authenticator selected the passkey with ID "${p.id}". This ID will be sent to the server so it knows which stored public key to use for signature verification.`,
-      });
-    }
-  }
-
-  // ── Assertion payload ─────────────────────────────────────────────────────
-  if (p.assertion) {
-    annotations.push({
-      type: 'info',
-      label: 'Signed assertion present',
-      detail: 'The frontend has attached the full signed assertion — authenticatorData, clientDataJSON, and signature — to this request. The server will now cryptographically verify all three.',
-    });
-    if (p.assertion.response && p.assertion.response.userHandle) {
-      annotations.push({
-        type: 'info',
-        label: 'User handle returned',
-        detail: 'The authenticator returned a userHandle, which lets the server identify the account without the user having typed an email. This is the "discoverable credential" (username-less login) mechanism.',
-      });
-    }
-  }
-
-  // ── Verification result ───────────────────────────────────────────────────
   if (p.verified === true) {
-    annotations.push({
-      type: 'success',
-      label: 'Signature verified',
-      detail: 'The server validated the cryptographic signature against the stored public key. The challenge matched, the origin was correct, and the counter was acceptable. Authentication succeeded.',
-    });
+    annotations.push({ type: 'success', label: 'Signature verified', detail: 'The cryptographic signature matched the stored public key. Challenge, origin, and counter all checked out.' });
   } else if (p.verified === false) {
-    annotations.push({
-      type: 'error',
-      label: 'Verification failed',
-      detail: 'The server rejected the passkey response. Possible causes: the signature did not match the stored public key, the challenge was wrong or expired, the origin was unexpected, or the counter regressed (possible clone detected).',
-    });
+    annotations.push({ type: 'error', label: 'Verification failed', detail: 'Signature did not match, challenge was wrong/expired, origin mismatch, or counter regressed.' });
   }
 
-  // ── Counter analysis ──────────────────────────────────────────────────────
   if (p.counterDidRegress === true) {
-    annotations.push({
-      type: 'error',
-      label: 'Counter regression detected',
-      detail: `The authenticator reported a sign-count of ${p.reportedCounter}, which is less than the stored value of ${p.storedCounter}. This can indicate the passkey was cloned to another device. High-security applications should reject or flag this login.`,
-    });
-  } else if (p.counterDidRegress === false && p.storedCounter !== undefined) {
-    if (p.storedCounter === 0 && p.reportedCounter === 0) {
-      annotations.push({
-        type: 'info',
-        label: 'Counter not implemented',
-        detail: 'Both the stored and reported counters are 0. The authenticator you used may not use counters by default. This is normal and safe for most devices (like Face ID, Windows Hello, or built-in sensors). Your passkey is still secure.',
-      });
-    } else {
-      annotations.push({
-        type: 'success',
-        label: 'Counter advanced normally',
-        detail: `The sign-count moved from ${p.storedCounter} → ${p.nextCounter}. The counter is incrementing as expected, with no signs of credential cloning.`,
-      });
-    }
+    annotations.push({ type: 'error', label: 'Counter regression', detail: `Reported ${p.reportedCounter} < stored ${p.storedCounter}. Possible cloned credential.` });
+  } else if (p.counterDidRegress === false && p.storedCounter === 0 && p.reportedCounter === 0) {
+    annotations.push({ type: 'info', label: 'Counter not implemented', detail: 'Both counters are 0. Platform authenticators (Face ID, Windows Hello) often do not increment counters. This is normal and safe.' });
+  } else if (p.counterDidRegress === false && p.nextCounter !== undefined) {
+    annotations.push({ type: 'success', label: 'Counter advanced', detail: `Counter moved ${p.storedCounter} → ${p.nextCounter}. No cloning detected.` });
   }
 
-  // ── Final success flag ────────────────────────────────────────────────────
-  if (p.success === true && !p.verified) {
-    annotations.push({
-      type: 'success',
-      label: 'Operation succeeded',
-      detail: 'The server confirmed the operation completed successfully. The user is now authenticated (or registered, depending on the flow).',
-    });
-  }
-  if (p.success === false) {
-    annotations.push({
-      type: 'error',
-      label: 'Operation failed',
-      detail: 'The server returned a failure. Review earlier events in the timeline for the specific error — the root cause usually appears in the preceding backend event.',
-    });
+  if (p.success === true && p.verified === undefined) {
+    annotations.push({ type: 'success', label: 'Operation succeeded', detail: 'The server confirmed success. User is now authenticated (or registered).' });
   }
 
-  // ── Fallback: nothing generated ───────────────────────────────────────────
+  if (step === 'browser.create.completed' && p.hasResponse) {
+    annotations.push({ type: 'success', label: 'Key pair created', detail: 'The authenticator generated a new EC key pair. Private key is stored in secure hardware and never leaves the device.' });
+  }
+
+  if (step === 'browser.get.completed' && p.hasResponse) {
+    annotations.push({ type: 'success', label: 'Assertion signed', detail: 'The user completed the biometric gesture. The private key signed the challenge. Sending to server for verification.' });
+  }
+
   if (annotations.length === 0) {
-    annotations.push({
-      type: 'info',
-      label: 'Internal step',
-      detail: 'This is an internal processing event with no notable fields to annotate. It records an intermediate state transition in the WebAuthn ceremony.',
-    });
+    annotations.push({ type: 'info', label: 'Step recorded', detail: 'This event marks an internal state transition in the WebAuthn ceremony.' });
   }
 
-  return annotations;
+  return annotations.slice(0, 3);
 }
 
-// ─── Step 2: Annotation styles ─────────────────────────────────────────────
-const TYPE_STYLES = {
-  success: {
-    border: '1px solid #c3e6cb',
-    background: '#f0faf3',
-    labelColor: '#1a6b35',
-    dot: '#28a745',
-  },
-  error: {
-    border: '1px solid #f5c6cb',
-    background: '#fff5f5',
-    labelColor: '#8b1a1a',
-    dot: '#dc3545',
-  },
-  warning: {
-    border: '1px solid #ffeeba',
-    background: '#fffdf0',
-    labelColor: '#856404',
-    dot: '#e0a800',
-  },
-  info: {
-    border: '1px solid #bee5eb',
-    background: '#f0f8ff',
-    labelColor: '#0c5460',
-    dot: '#17a2b8',
-  },
-};
-import React, { useEffect, useRef, useState } from 'react';
-import mermaid from 'mermaid';
+function fieldDescription(key, value) {
+  const desc = {
+    challenge: 'A unique random nonce generated per ceremony. The authenticator signs it; the server verifies the signed value matches what it issued. Prevents replay attacks.',
+    rp: 'Relying Party — the website this passkey is bound to. Contains id (domain) and name (display label).',
+    rpId: `Domain the passkey is locked to ("${value}"). Passkeys cannot be used on any other origin — core anti-phishing guarantee.`,
+    user: 'Account being enrolled: id (opaque bytes → userHandle), name (email), displayName (friendly label).',
+    pubKeyCredParams: `Ordered list of accepted algorithms. Device picks the first it supports. (${Array.isArray(value) ? value.length : '?'} offered)`,
+    authenticatorSelection: 'Constraints: attachment (platform/cross-platform), residentKey (discoverable), userVerification.',
+    authenticatorAttachment: value === 'platform' ? 'Built-in sensor only (Face ID, fingerprint, Windows Hello).' : 'Roaming key (USB, NFC, BLE).',
+    residentKey: value === 'required' ? 'Discoverable credential required — enables username-less login.' : `residentKey: ${value}`,
+    attestation: value === 'direct' ? 'Raw attestation cert requested — server wants to verify authenticator make/model.' : `attestation: ${value}`,
+    allowCredentials: `Passkeys accepted for this login. Browser filters device credentials to match. (${Array.isArray(value) ? value.length : '?'} listed)`,
+    userVerification: `"${value}" — ${value === 'required' ? 'biometric/PIN mandatory.' : value === 'preferred' ? 'biometric/PIN if available.' : 'presence only.'}`,
+    timeout: `Browser waits ${typeof value === 'number' ? Math.round(value / 1000) + 's' : value} for user gesture.`,
+    transports: `Transport(s): ${Array.isArray(value) ? value.join(', ') : value}. Tells browser which UI to show.`,
+    id: 'Credential ID — identifies which passkey to use. Not secret.',
+    rawId: 'Credential ID in original binary (Base64) form.',
+    type: value === 'public-key' ? 'Standard WebAuthn credential type — uses asymmetric key pair.' : `type: ${value}`,
+    authenticatorData: 'Binary blob: rpIdHash + flags (UV/UP bits) + sign counter + optional extensions. Server checks all of these.',
+    clientDataJSON: 'Browser-assembled JSON: type (webauthn.get/create) + challenge + origin. Authenticator signs this; server verifies.',
+    signature: 'The cryptographic proof. Private key signed (authenticatorData ‖ hash(clientDataJSON)). Server verifies with stored public key.',
+    userHandle: 'Opaque bytes linking the passkey to a user account. Enables username-less login. Should not contain PII.',
+    attestationObject: 'CBOR bundle: new public key + authenticatorData + attestation statement (cert chain). Only present during registration.',
+    publicKey: 'The public half of the key pair (COSE-encoded). Stored permanently. Cannot produce signatures; only verify them.',
+    publicKeyAlgorithm: `Algorithm: ${value === -7 ? 'ES256 (ECDSA/P-256)' : value === -257 ? 'RS256 (RSA)' : value === -8 ? 'EdDSA (Ed25519)' : value}`,
+    verified: value ? 'Cryptographic signature + challenge + origin + counter all passed.' : 'Verification failed. See earlier events for details.',
+    storedCounter: `Sign-count the server had stored (${value}). Used to detect cloned credentials.`,
+    reportedCounter: `Sign-count the authenticator reported this time (${value}). Must be ≥ stored value.`,
+    nextCounter: `New counter to store (${value}). Next login must report ≥ this value.`,
+    counterDidRegress: value ? 'Counter went backwards — possible credential clone.' : 'Counter OK — no cloning detected.',
+    ok: value === true
+      ? 'Boolean success flag from backend/database instrumentation. true means the DB operation completed successfully.'
+      : 'false means the DB operation failed or returned an unexpected state.',
+    rowCount: `How many rows matched/returned for this DB operation (${value}). For lookups, 1 usually means one user or credential row was found.`,
+    error: value === null
+      ? 'No database error occurred. null here is good and means the SQL operation succeeded.'
+      : `Database error text. Non-null values indicate a SQL/connection issue: ${value}`,
+    operation: `Database action type: "${value}". Common values: select (read), insert (create), update (modify).`,
+    success: value ? 'Server confirmed success.' : 'Server returned failure.',
+    email: `Account identifier used to look up registered passkeys. Value: "${value}"`,
+    hasResponse: value ? 'Browser returned a credential object — user completed the gesture.' : 'No credential returned — cancelled or no passkey found.',
+    hasAssertion: value ? 'Signed assertion received by backend, ready to verify.' : 'No assertion received.',
+    hasCredential: value ? 'Credential object received by backend for registration.' : 'No credential in request.',
+    hasRegistrationInfo: value ? 'Verification returned registration info including the new public key.' : '',
+    origin: `Page origin that initiated the ceremony ("${value}"). Authenticator signs this; server verifies to block phishing.`,
+    crossOrigin: value ? 'Cross-origin ceremony (iframe on different domain). Usually rejected.' : 'Same-origin — normal case.',
+    alg: `COSE algorithm code ${value} = ${value === -7 ? 'ES256' : value === -257 ? 'RS256' : value === -8 ? 'EdDSA' : value}`,
+    assertion: 'Full signed response from authenticator: id + authenticatorData + clientDataJSON + signature + userHandle.',
+    credential: 'Full credential object from authenticator: id + attestationObject + authenticatorData + clientDataJSON + publicKey.',
+  };
+  return desc[key] || '';
+}
 
-
-// Helper to generate Mermaid sequence diagram from events, with event index for click mapping
-// Returns Mermaid diagram string
-function generateMermaidSequence(events) {
-  if (!Array.isArray(events) || events.length === 0) {
-    return 'sequenceDiagram\nNote over Frontend: No events to display';
+function PayloadTree({ payload, depth = 0 }) {
+  if (!payload || typeof payload !== 'object') {
+    return <span style={{ color: T.accent }}>{String(payload)}</span>;
   }
-  let diagram = 'sequenceDiagram\n';
-  events.forEach((event, idx) => {
-    // Determine message direction
-    let from = 'Frontend';
-    let to = 'Backend';
-    if (event.direction === 'frontend->backend' || event.source === 'frontend') {
-      from = 'Frontend';
-      to = 'Backend';
-    } else if (event.direction === 'backend->frontend' || event.source === 'backend') {
-      from = 'Backend';
-      to = 'Frontend';
-    } else if (event.direction === 'browser->frontend') {
-      from = 'Browser';
-      to = 'Frontend';
-    } else if (event.direction === 'frontend->browser') {
-      from = 'Frontend';
-      to = 'Browser';
-    }
-    if (!event.direction && event.source === 'frontend' && event.step && event.step.toLowerCase().includes('browser')) {
-      from = 'Browser';
-      to = 'Frontend';
-    }
-    // Main label for the event
-    let label = event.step || event.endpoint || event.type || 'event';
-    // Build multiline label with <br/>, bold first payload line for HTTP events
-    let labelLines = [label];
-    // Add payload fields if present
-    if (event.payloadRaw && typeof event.payloadRaw === 'object') {
-      const keys = Object.keys(event.payloadRaw);
-      if (keys.length > 0) {
-        keys.forEach((k) => {
-          let v = event.payloadRaw[k];
-          let vStr = '';
-          if (typeof v === 'string') {
-            vStr = v;
-            // Remove leading/trailing double quotes if present
-            if (vStr.startsWith('"') && vStr.endsWith('"') && vStr.length > 1) {
-              vStr = vStr.slice(1, -1);
-            }
-          } else if (typeof v === 'number' || typeof v === 'boolean') vStr = String(v);
-          else if (Array.isArray(v)) vStr = `[${v.length} items]`;
-          else if (typeof v === 'object' && v !== null) vStr = '{...}';
-          vStr = vStr.length > 60 ? vStr.slice(0, 60) + '…' : vStr;
-          labelLines.push(`${k}: ${vStr}`);
-        });
-      }
-    }
-    // Mermaid multiline label: join with <br/>, do not wrap in double quotes
-    // Mermaid multiline label: join with <br/>, do not wrap in double quotes
-    let mermaidLabel = labelLines.join('<br/>');
-    // Determine arrow direction
-    // Use solid arrow for all messages
-    let arrow = '->>';
-    diagram += `${from}${arrow}${to}: ${mermaidLabel}\n`;
-  });
-  return diagram;
+  if (Array.isArray(payload)) {
+    return (
+      <div style={{ paddingLeft: depth > 0 ? 14 : 0 }}>
+        {payload.map((item, i) => (
+          <div key={i} style={{ marginBottom: 6 }}>
+            <span style={{ color: T.textMuted, fontSize: 11 }}>[{i}]</span>
+            {typeof item === 'object' ? <PayloadTree payload={item} depth={depth + 1} /> : (
+              <span style={{ color: T.accent, marginLeft: 6, fontSize: 12 }}>{String(item)}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div style={{ paddingLeft: depth > 0 ? 14 : 0 }}>
+      {Object.entries(payload).map(([key, value]) => {
+        const desc = fieldDescription(key, value);
+        return (
+          <div key={key} style={{ marginBottom: 10, borderLeft: depth > 0 ? `2px solid ${T.border}` : 'none', paddingLeft: depth > 0 ? 8 : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, color: T.purple, fontSize: 12 }}>{key}</span>
+              {typeof value !== 'object' && (
+                <span style={{ fontFamily: 'monospace', color: T.orange, fontSize: 12 }}>
+                  {String(value).length > 60 ? String(value).slice(0, 60) + '…' : String(value)}
+                </span>
+              )}
+              {Array.isArray(value) && (
+                <span style={{ color: T.textMuted, fontSize: 11 }}>[ {value.length} items ]</span>
+              )}
+              {typeof value === 'object' && !Array.isArray(value) && value !== null && (
+                <span style={{ color: T.textMuted, fontSize: 11 }}>{'{ … }'}</span>
+              )}
+            </div>
+            {desc && (
+              <div style={{ color: '#92400e', fontSize: 12, marginTop: 2, lineHeight: 1.5, fontStyle: 'italic' }}>{desc}</div>
+            )}
+            {typeof value === 'object' && value !== null && (
+              <PayloadTree payload={value} depth={depth + 1} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
+// ─── Legend ───────────────────────────────────────────────────────────────────
+function Legend() {
+  const items = [
+    { color: T.arrowHttp,    label: 'HTTP request/response' },
+    { color: T.arrowWebAuthn,label: 'WebAuthn / Authenticator' },
+    { color: T.arrowDb,      label: 'Database query/result' },
+    { color: T.arrowInternal,label: 'Internal step / note' },
+  ];  return (
+    <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 12 }}>
+      {items.map(({ color, label }) => (
+        <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <svg width={28} height={10}>
+            <line x1={0} y1={5} x2={22} y2={5} stroke={color} strokeWidth={2} />
+            <polygon points="22,2 28,5 22,8" fill={color} />
+          </svg>
+          <span style={{ fontSize: 12, color: T.textMuted }}>{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-
-
-
+// ─── Main component ───────────────────────────────────────────────────────────
 const FlowSequenceDiagram = () => {
   const [events, setEvents] = useState([]);
-  const [selectedEventIdx, setSelectedEventIdx] = useState(0);
-  const [diagramKey, setDiagramKey] = useState(0);
+  const [selectedIdx, setSelectedIdx] = useState(0);
   const [selectedFile, setSelectedFile] = useState(null);
-  const diagramRef = useRef(null);
+  const [flowType, setFlowType] = useState('');
+  const [error, setError] = useState('');
+  const [copiedPayload, setCopiedPayload] = useState(false);
+  const diagramContainerRef = useRef(null);
 
-  // Handle file upload
   const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    setSelectedFile(file || null);
-    console.log('File selected:', file);
+    setSelectedFile(e.target.files[0] || null);
+    setError('');
   };
 
   const handleLoad = () => {
-    if (!selectedFile) {
-      alert('No file selected.');
-      return;
-    }
+    if (!selectedFile) { setError('No file selected.'); return; }
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const raw = evt.target.result;
-        const json = JSON.parse(raw);
-        console.log('Raw JSON loaded:', json);
-        let loadedEvents = [];
-        if (Array.isArray(json.mergedTimeline)) {
-          loadedEvents = json.mergedTimeline;
-        } else if (Array.isArray(json.frontendEvents) || Array.isArray(json.backendEvents)) {
-          loadedEvents = [
-            ...(Array.isArray(json.frontendEvents) ? json.frontendEvents : []),
-            ...(Array.isArray(json.backendEvents) ? json.backendEvents : [])
-          ];
-        } else if (Array.isArray(json.events)) {
-          loadedEvents = json.events;
-        } else if (Array.isArray(json)) {
-          loadedEvents = json;
-        } else if (json && typeof json === 'object') {
-          // Try to find a property that is an array of objects
-          const arrProp = Object.values(json).find(v => Array.isArray(v) && v.length && typeof v[0] === 'object');
-          if (arrProp) loadedEvents = arrProp;
-        }
-        if (!Array.isArray(loadedEvents) || loadedEvents.length === 0) {
-          alert('No events found in file. Check the file format.');
-          console.warn('No events found after parsing:', json);
-        }
-        setEvents(loadedEvents);
-        setSelectedEventIdx(0);
-        setDiagramKey(prev => prev + 1);
-        console.log('Loaded events:', loadedEvents);
-      } catch (err) {
-        alert('Invalid JSON file.');
-        console.error('JSON parse error:', err);
+        const json = JSON.parse(evt.target.result);
+        let rawEvents = [];
+        if (Array.isArray(json.mergedTimeline)) rawEvents = json.mergedTimeline;
+        else if (Array.isArray(json.frontendEvents) || Array.isArray(json.backendEvents)) {
+          rawEvents = [
+            ...(json.frontendEvents || []),
+            ...(json.backendEvents || []),
+          ].sort((a, b) => Date.parse(a.timestamp || 0) - Date.parse(b.timestamp || 0));
+        } else if (Array.isArray(json)) rawEvents = json;
+
+        if (!rawEvents.length) { setError('No events found in file.'); return; }
+
+        const ft = rawEvents.find(e => e.flowType)?.flowType || '';
+        setFlowType(ft);
+
+        const synth = buildSyntheticEvents(rawEvents, ft);
+        const merged = mergeAndSortEvents(rawEvents, synth);
+        setEvents(merged);
+        setSelectedIdx(0);
+        setError('');
+      } catch {
+        setError('Invalid JSON file — could not parse.');
       }
     };
     reader.readAsText(selectedFile);
   };
 
+  const selectedEvent = events[selectedIdx] || null;
+  const annotations = generateAnnotations(selectedEvent);
+  const { from, to } = selectedEvent ? routeRawEvent(selectedEvent) : { from: '', to: '' };
+
+  const handleCopyPayload = useCallback(async () => {
+    if (!selectedEvent?.payloadRaw) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(selectedEvent.payloadRaw, null, 2));
+      setCopiedPayload(true);
+      setTimeout(() => setCopiedPayload(false), 1200);
+    } catch {
+      setCopiedPayload(false);
+    }
+  }, [selectedEvent]);
+
+  // Scroll diagram row into view when selection changes
   useEffect(() => {
-    if (diagramRef.current) {
-      if (events.length === 0) {
-        diagramRef.current.innerHTML = '';
-        return;
-      }
-      // Debug: Log events before rendering
-      console.log('Rendering diagram with events:', events.length, events);
-      const diagram = generateMermaidSequence(events);
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: 'default',
-        themeVariables: {
-          actorFontWeight: 'bold',
-          actorFontSize: '24px',
-        },
-        sequence: {
-          actorMargin: 200,
-          diagramPadding: 30,
-        }
-      });
-      mermaid.render('mermaid-seq', diagram, (svgCode) => {
-        diagramRef.current.innerHTML = svgCode;
-        try {
-          const svg = diagramRef.current.querySelector('svg');
-          if (!svg) return;
-          Array.from(svg.querySelectorAll('.event-overlay')).forEach(e => e.remove());
-          const messageNodes = Array.from(svg.querySelectorAll('text.messageText'));
-          let eventBlocks = [];
-          let currentBlock = [];
-          messageNodes.forEach((node, i) => {
-            if (currentBlock.length === 0) {
-              currentBlock.push(node);
-            } else {
-              const prevY = parseFloat(currentBlock[currentBlock.length - 1].getAttribute('y'));
-              const currY = parseFloat(node.getAttribute('y'));
-              if (currY - prevY > 25) {
-                eventBlocks.push(currentBlock);
-                currentBlock = [node];
-              } else {
-                currentBlock.push(node);
-              }
-            }
-          });
-          if (currentBlock.length > 0) eventBlocks.push(currentBlock);
-          eventBlocks.forEach((block, idx) => {
-            let group = null;
-            if (block.length > 1) {
-              group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-              block.forEach(node => group.appendChild(node.cloneNode(true)));
-              svg.appendChild(group);
-            }
-            const bbox = (group || block[0]).getBBox();
-            if (group) svg.removeChild(group);
-            const minX = bbox.x - 12;
-            const minY = bbox.y - 12;
-            const width = bbox.width + 24;
-            const height = bbox.height + 24;
-            if (idx === selectedEventIdx) {
-              const highlight = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-              highlight.setAttribute('x', minX);
-              highlight.setAttribute('y', minY);
-              highlight.setAttribute('width', width);
-              highlight.setAttribute('height', height);
-              highlight.setAttribute('fill', '#eaf3ff');
-              highlight.setAttribute('stroke', '#0f62fe');
-              highlight.setAttribute('stroke-width', '2');
-              highlight.classList.add('event-overlay');
-              block[0].parentNode.insertBefore(highlight, block[0]);
-            }
-            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            rect.setAttribute('x', minX);
-            rect.setAttribute('y', minY);
-            rect.setAttribute('width', width);
-            rect.setAttribute('height', height);
-            rect.setAttribute('fill', 'rgba(144,238,144,0.25)');
-            rect.setAttribute('cursor', 'pointer');
-            rect.setAttribute('pointer-events', 'all');
-            rect.setAttribute('title', 'Click to select event');
-            rect.classList.add('event-overlay');
-            rect.addEventListener('click', (e) => { e.stopPropagation(); setSelectedEventIdx(idx); });
-            block[0].parentNode.insertBefore(rect, block[0]);
-          });
-        } catch (e) {}
-      });
-    }
-  }, [events, selectedEventIdx]);
-
-
-
-  // Export as HTML
-  function handleExportHTML() {
-    if (!diagramRef.current) return;
-    const svg = diagramRef.current.innerHTML;
-    const html = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>Sequence Diagram Export</title></head><body style='background:#fff;'>${svg}</body></html>`;
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'sequence-diagram-export.html';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-  }
-
-  // Export as PNG
-  function handleExportPNG() {
-    if (!diagramRef.current) return;
-    const svgElem = diagramRef.current.querySelector('svg');
-    if (!svgElem) return;
-    const svgString = new XMLSerializer().serializeToString(svgElem);
-    const canvas = document.createElement('canvas');
-    const bbox = svgElem.getBBox();
-    canvas.width = bbox.width + 40;
-    canvas.height = bbox.height + 40;
-    const ctx = canvas.getContext('2d');
-    const img = new window.Image();
-    const svg64 = btoa(unescape(encodeURIComponent(svgString)));
-    const image64 = 'data:image/svg+xml;base64,' + svg64;
-    img.onload = function () {
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 20, 20);
-      canvas.toBlob(function(blob) {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'sequence-diagram-export.png';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-      }, 'image/png');
-    };
-    img.src = image64;
-  }
-
-  // Helper to pretty-print JSON
-  function pretty(obj) {
-    return JSON.stringify(obj, null, 2);
-  }
-
-  const selectedEvent = events[selectedEventIdx] || null;
-
-  // Generate a one-line, human-readable description for a key/value
-  function fieldDescription(key, value) {
-  // ── Challenge ──────────────────────────────────────────────────────────────
-  if (key === 'challenge') {
-    return 'A unique random string generated fresh by the server for every login or registration attempt. ' +
-      'Your passkey will cryptographically "sign" this challenge to prove it holds the real secret key. ' +
-      'Because a new challenge is created each time, an attacker who intercepts a previous login ' +
-      'cannot reuse it — this is called replay-attack prevention.';
-  }
-
-  // ── Allow / Exclude Credentials ────────────────────────────────────────────
-  if (key === 'allowCredentials') {
-    return `A list of passkeys the server will accept for this login. Each entry contains a credential ` +
-      `ID and the transport methods (USB, internal chip, Bluetooth, etc.) the server knows that ` +
-      `passkey can use. Your browser/device uses this list to find the right passkey without ` +
-      `exposing others. ${Array.isArray(value) ? `(${value.length} credential${value.length !== 1 ? 's' : ''} listed)` : ''}`;
-  }
-  if (key === 'excludeCredentials') {
-    return `A list of passkeys already registered for this account. During registration the server ` +
-      `sends this list so your device won't create a duplicate passkey for a device you've ` +
-      `already enrolled. ${Array.isArray(value) ? `(${value.length} existing credential${value.length !== 1 ? 's' : ''})` : ''}`;
-  }
-
-  // ── Credential type & id ───────────────────────────────────────────────────
-  if (key === 'type') {
-    if (value === 'public-key') {
-      return '"public-key" is the only WebAuthn credential type. It means the passkey stores a ' +
-        'private key on your device and shares only the corresponding public key with the server — ' +
-        'so the server can verify you without ever seeing your secret.';
-    }
-    return `Type: ${value}`;
-  }
-  if (key === 'id') {
-    return 'A stable identifier the server assigned to this specific passkey when it was created. ' +
-      'It is not a secret — it just tells the server which public key to use when verifying your ' +
-      'signature. Think of it like a username for a single passkey.';
-  }
-  if (key === 'rawId') {
-    return 'The same credential ID as "id" but in its original binary (Base64-encoded) form before ' +
-      'any URL-safe encoding is applied. Included alongside "id" to ensure nothing is lost in ' +
-      'encoding conversion.';
-  }
-
-  // ── Transports ─────────────────────────────────────────────────────────────
-  if (key === 'transports') {
-    const transportLabels = {
-      internal: 'a built-in authenticator (fingerprint sensor, Face ID, or Windows Hello)',
-      usb:      'a USB security key (e.g. YubiKey)',
-      nfc:      'an NFC tap (tap the key or phone to a reader)',
-      ble:      'Bluetooth (phone or BLE security key nearby)',
-      hybrid:   'cross-device (scanning a QR code on another phone)',
-      'smart-card': 'a smart card reader',
-    };
-    const labels = (Array.isArray(value) ? value : [value])
-      .map(t => transportLabels[t] || t)
-      .join(', ');
-    return `How the passkey communicates with the browser: ${labels}. The browser uses this hint to ` +
-      `choose the right UI (e.g. show a fingerprint prompt vs. a QR code).`;
-  }
-
-  // ── User verification ──────────────────────────────────────────────────────
-  if (key === 'userVerification') {
-    const meanings = {
-      required:    '"required" means the server insists on a local check — fingerprint, face scan, or PIN — before the passkey is used. If the device cannot perform verification, the request will fail.',
-      preferred:   '"preferred" means perform a fingerprint/PIN check if the device supports it, but don\'t block the flow if it doesn\'t.',
-      discouraged: '"discouraged" means skip the local check entirely — just presence of the device is enough (used for low-risk operations like adding a second factor, not primary login).',
-    };
-    return meanings[value] || `User verification requirement: ${value}.`;
-  }
-
-  // ── Timeout ────────────────────────────────────────────────────────────────
-  if (key === 'timeout') {
-    const secs = typeof value === 'number' ? Math.round(value / 1000) : '?';
-    return `How long (${secs} seconds) the browser will wait for you to complete the passkey gesture ` +
-      `(fingerprint tap, PIN entry, etc.) before giving up and showing an error. Set by the server ` +
-      `to balance security and usability.`;
-  }
-
-  // ── Relying party ──────────────────────────────────────────────────────────
-  if (key === 'rpId') {
-    return `The "Relying Party ID" — the domain name this passkey is bound to (value: "${value}"). ` +
-      `Passkeys are cryptographically tied to this domain, so a passkey created for example.com ` +
-      `cannot be used on evil-example.com. This is the core anti-phishing guarantee of WebAuthn.`;
-  }
-  if (key === 'rp') {
-    return 'Information about the website (Relying Party) the passkey is being registered for. ' +
-      'Contains the domain "id" and a human-readable "name". The browser shows this name to users ' +
-      'in prompts like "Create a passkey for Acme Corp?".';
-  }
-
-  // ── User ───────────────────────────────────────────────────────────────────
-  if (key === 'user') {
-    return 'Identifies the account being enrolled. Contains three sub-fields: "id" (an opaque byte ' +
-      'string your server uses to link the passkey to an account), "name" (usually the email shown ' +
-      'in authenticator UI), and "displayName" (a friendly label like "Jane Smith").';
-  }
-  if (key === 'username') {
-    return `The account identifier (email or username) submitted by the user to start this flow. ` +
-      `The server uses it to look up any existing passkeys and build the challenge. ` +
-      `Value: "${value}"`;
-  }
-  if (key === 'displayName') {
-    return `A human-readable label for the account shown inside the passkey prompt on the ` +
-      `device (e.g. "Jane Smith"). It helps users identify which passkey to approve when they ` +
-      `have multiple accounts on a site. Value: "${value}"`;
-  }
-
-  // ── Crypto: assertion response fields ─────────────────────────────────────
-  if (key === 'authenticatorData') {
-    return 'A binary blob (Base64-encoded here) produced by the authenticator chip/OS. It contains: ' +
-      'the hash of the rpId (proving which site was used), a flags byte (bit 0 = user was present, ' +
-      'bit 2 = user was verified), a counter that increments with every use (so the server can ' +
-      'detect cloned authenticators), and optional extension data. The server checks all of these ' +
-      'before accepting the login.';
-  }
-  if (key === 'clientDataJSON') {
-    return 'A Base64-encoded JSON object assembled by the browser (not the authenticator). It ' +
-      'records the operation type ("webauthn.get" for login, "webauthn.create" for registration), ' +
-      'the exact challenge the server sent, and the page origin. The authenticator signs this ' +
-      'alongside authenticatorData, so any tampering is detected.';
-  }
-  if (key === 'signature') {
-    return 'The cryptographic proof of this login. The passkey\'s private key signed a combination ' +
-      'of authenticatorData + a hash of clientDataJSON. The server verifies this signature with ' +
-      'the stored public key — if the signature is valid, it proves you hold the private key ' +
-      'without the server ever seeing it.';
-  }
-  if (key === 'userHandle') {
-    return 'An opaque byte string (Base64-encoded) returned by the authenticator that links the ' +
-      'passkey to an account on the server. In "username-less" / discoverable credential flows the ' +
-      'server uses this to look up which user logged in, since no username was typed. It is set ' +
-      'during registration and should NOT contain PII (not an email or name).';
-  }
-
-  // ── Crypto: attestation (registration) ────────────────────────────────────
-  if (key === 'attestationObject') {
-    return 'A CBOR-encoded object returned only during registration. It bundles three things: ' +
-      '(1) the new public key itself, (2) authenticatorData (same structure as in login), and ' +
-      '(3) an optional attestation statement — a certificate chain proving which make/model of ' +
-      'authenticator created the key, useful for high-security scenarios. Most consumer sites ' +
-      'use "none" attestation and ignore the certificate.';
-  }
-  if (key === 'publicKey') {
-    return 'The public half of the passkey\'s key pair (COSE-encoded). The server stores this ' +
-      'permanently. It can only verify signatures — it cannot be used to log in by itself or to ' +
-      'recover the private key. Think of it like a padlock the server keeps; only your device ' +
-      'holds the matching key.';
-  }
-  if (key === 'publicKeyAlgorithm') {
-    const algNames = { '-7': 'ES256 (ECDSA with SHA-256)', '-257': 'RS256 (RSASSA-PKCS1-v1_5 with SHA-256)', '-8': 'EdDSA (Ed25519)' };
-    const name = algNames[String(value)] || `algorithm ID ${value}`;
-    return `The signing algorithm used by this passkey: ${name}. This tells the server how to ` +
-      `verify signatures. ES256 (the most common) uses elliptic-curve cryptography, which is ` +
-      `fast and produces compact signatures.`;
-  }
-
-  // ── Counter fields ─────────────────────────────────────────────────────────
-  if (key === 'verified') {
-    return value === true
-      ? 'The server successfully verified the passkey signature, confirmed the challenge matched, ' +
-        'checked the origin, and accepted the counter. Authentication passed.'
-      : 'Verification failed — the server rejected the passkey response. Possible causes: wrong ' +
-        'challenge, mismatched origin, invalid signature, or a counter regression (potential clone).';
-  }
-  if (key === 'storedCounter') {
-    return `The sign-count the server had stored from the previous successful use of this passkey ` +
-      `(value: ${value}). WebAuthn authenticators increment a counter on every use to help detect ` +
-      `cloned credentials.`;
-  }
-  if (key === 'reportedCounter') {
-    return `The sign-count value the authenticator reported in this response (value: ${value}). ` +
-      `The server compares this to the stored counter to verify it has not gone backwards, which ` +
-      `would suggest the passkey was copied to another device.`;
-  }
-  if (key === 'nextCounter') {
-    return `The value (${value}) the server will now store as the new sign-count for this passkey. ` +
-      `On the next login the reported counter must be ≥ this value, or the server flags a ` +
-      `potential clone attack.`;
-  }
-  if (key === 'counterDidRegress') {
-    return value === false
-      ? 'The sign-count did not go backwards — no clone detected. Counter validation passed.'
-      : 'The counter regressed (new value < stored value). This can indicate the passkey was ' +
-        'cloned to another device. High-security apps may reject or flag this login.';
-  }
-
-  // ── Misc response fields ───────────────────────────────────────────────────
-  if (key === 'success') {
-    return value === true
-      ? 'The server completed the operation successfully and considers the user authenticated.'
-      : 'The server returned a failure response. Check earlier events for the specific error.';
-  }
-  if (key === 'hasResponse') {
-    return value === true
-      ? 'The browser\'s navigator.credentials.get() call returned a credential object — the user ' +
-        'completed the passkey gesture (fingerprint, PIN, etc.) successfully.'
-      : 'No credential was returned — the user may have cancelled or the authenticator was unavailable.';
-  }
-  if (key === 'hasAssertion') {
-    return value === true
-      ? 'The backend received the signed assertion from the frontend and is ready to verify it.'
-      : 'No assertion was received by the backend.';
-  }
-  if (key === 'assertion') {
-    return 'The full signed response from the user\'s authenticator, sent to the server for ' +
-      'verification. Contains the credential ID, the signed authenticatorData, clientDataJSON, ' +
-      'the signature, and optionally the userHandle. This is the "proof of possession" of the passkey.';
-  }
-  if (key === 'origin') {
-    return `The full URL origin (scheme + host + port) of the page that initiated this WebAuthn ` +
-      `operation (value: "${value}"). The authenticator signs this into clientDataJSON. The server ` +
-      `checks it matches the expected origin — a mismatch means a phishing page tried to relay ` +
-      `the request.`;
-  }
-  if (key === 'crossOrigin') {
-    return value === false
-      ? '"crossOrigin: false" means the credential was created on the same origin as the page — ' +
-        'the normal case. A cross-origin value of true would mean an iframe on a different domain ' +
-        'initiated the ceremony, which most servers reject.'
-      : 'The WebAuthn ceremony was initiated from a different origin (cross-origin iframe). ' +
-        'Servers typically reject this unless explicitly configured to allow it.';
-  }
-  if (key === 'email') {
-    return `The email address submitted by the user to identify their account (value: "${value}"). ` +
-      `Used by the server to look up registered passkeys and build the authentication challenge.`;
-  }
-
-  // ── PubKeyCredParams (registration) ───────────────────────────────────────
-  if (key === 'pubKeyCredParams') {
-    return `An ordered list of cryptographic algorithms the server is willing to accept for the ` +
-      `new passkey. The device picks the first algorithm it supports. ` +
-      `${Array.isArray(value) ? `(${value.length} algorithm${value.length !== 1 ? 's' : ''} offered)` : ''}`;
-  }
-  if (key === 'alg') {
-    const algNames = { '-7': 'ES256 (ECDSA/P-256)', '-257': 'RS256 (RSA/PKCS1)', '-8': 'EdDSA (Ed25519)' };
-    return `Algorithm code ${value} = ${algNames[String(value)] || 'unknown algorithm'}. ` +
-      `This integer is defined by the COSE standard (RFC 8152).`;
-  }
-
-  // ── Authenticator selection (registration) ─────────────────────────────────
-  if (key === 'authenticatorSelection') {
-    return 'Constraints the server places on which type of authenticator can be used to register. ' +
-      'Sub-fields like "authenticatorAttachment", "residentKey", and "userVerification" let the ' +
-      'server require, for example, a built-in device sensor (not a USB key) and that the passkey ' +
-      'be stored on the device for username-less login.';
-  }
-  if (key === 'authenticatorAttachment') {
-    const meanings = {
-      platform:      '"platform" — only accept a built-in authenticator (Face ID, fingerprint sensor, Windows Hello). No USB or Bluetooth keys.',
-      'cross-platform': '"cross-platform" — only accept a roaming authenticator such as a hardware security key (YubiKey, etc.).',
-    };
-    return meanings[value] || `Authenticator attachment preference: ${value}.`;
-  }
-  if (key === 'residentKey') {
-    const meanings = {
-      required:    '"required" — the passkey must be stored on the authenticator as a discoverable credential. This enables username-less login (the server never asks for an email).',
-      preferred:   '"preferred" — store as discoverable if possible, fall back to non-discoverable.',
-      discouraged: '"discouraged" — do not store on the authenticator; the server will pass a credential ID at login time.',
-    };
-    return meanings[value] || `Resident key requirement: ${value}.`;
-  }
-
-  // ── Attestation conveyance ─────────────────────────────────────────────────
-  if (key === 'attestation') {
-    const meanings = {
-      none:     '"none" — the server does not need a certificate proving what type of authenticator was used. Simplest and most privacy-preserving option; fine for most consumer apps.',
-      indirect: '"indirect" — the server wants attestation but allows the browser to anonymise it.',
-      direct:   '"direct" — the server wants the raw attestation certificate so it can verify the exact make/model of authenticator.',
-      enterprise: '"enterprise" — the server wants unique device identifiers, used in corporate MDM scenarios.',
-    };
-    return meanings[value] || `Attestation conveyance preference: ${value}.`;
-  }
-
-  // ── Extensions ────────────────────────────────────────────────────────────
-  if (key === 'extensions') {
-    return 'Optional WebAuthn extensions that add extra capabilities or metadata to the ceremony. ' +
-      'Common examples: "credProps" (tells the client whether a resident/discoverable key was ' +
-      'created), "uvm" (user verification method — reports biometric vs PIN), "prf" (lets the ' +
-      'passkey derive a symmetric key for encryption use cases).';
-  }
-
-  // ── Generic fallbacks ─────────────────────────────────────────────────────
-  if (Array.isArray(value)) return `Array with ${value.length} item${value.length !== 1 ? 's' : ''}.`;
-  if (typeof value === 'object' && value !== null) return 'Nested object — expand to see sub-fields.';
-  return '';
-}
-
-  // Recursively generate a flat, readable list for the payload (unlimited depth)
-  function describePayload(payload) {
-    if (!payload || typeof payload !== 'object') return <div>No payload.</div>;
-    let desc = [];
-    // (Removed: special case for counter note; now handled in annotation only)
-    if (Array.isArray(payload)) {
-      if (payload.length === 0) return <div>[empty array]</div>;
-      payload.forEach((item, idx) => {
-        desc.push(
-          <div key={idx} style={{ marginBottom: 8 }}>
-            <span style={{ fontWeight: 500, color: '#333' }}>{`[${idx}]`}</span>
-            <div style={{ fontFamily: 'monospace', color: '#222', marginTop: 2 }}>{typeof item === 'object' ? '' : String(item)}</div>
-            <div style={{ fontFamily: 'cursive', color: '#8a6d00', fontSize: 14, marginBottom: 2 }}>{fieldDescription(idx, item)}</div>
-            {typeof item === 'object' && item !== null ? describePayload(item) : null}
-          </div>
-        );
-      });
-      return <div>{desc}</div>;
-    }
-    for (const [key, value] of Object.entries(payload)) {
-      desc.push(
-        <div key={key + '-field'} style={{ marginBottom: 8 }}>
-          <span style={{ fontWeight: 500, color: '#333' }}>{key}:</span>
-          <span style={{ fontFamily: 'monospace', color: '#222', marginLeft: 6 }}>{typeof value === 'object' ? '' : String(value)}</span>
-          <div style={{ fontFamily: 'cursive', color: '#8a6d00', fontSize: 14, marginTop: 2, marginBottom: 2 }}>{fieldDescription(key, value)}</div>
-          {typeof value === 'object' && value !== null ? describePayload(value) : null}
-        </div>
-      );
-    }
-    return <div>{desc}</div>;
-  }
+    if (!diagramContainerRef.current) return;
+    const { offsets } = computeRowOffsets(events);
+    const rowY = offsets[selectedIdx] ?? HEADER_H;
+    diagramContainerRef.current.scrollTop = Math.max(0, rowY - 120);
+  }, [events, selectedIdx]);
 
   return (
-    <div style={{ maxWidth: '1100px', margin: '24px auto', padding: '0 16px', display: 'flex', gap: '32px' }}>
-      <div style={{ flex: 2, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h1 style={{ marginBottom: 0 }}>Passkey Flow Sequence Diagram</h1>
+    <div style={{
+      minHeight: '100vh',
+      background: T.bg,
+      color: T.text,
+      fontFamily: "'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace",
+      display: 'flex',
+      flexDirection: 'column',
+    }}>
+      {/* Header bar */}
+      <div style={{
+        background: T.surface,
+        borderBottom: `1px solid ${T.border}`,
+        padding: '14px 28px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 20,
+        flexWrap: 'wrap',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.07)',
+      }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.5px', color: T.text }}>
+            🔑 Passkey Flow Visualizer
+          </div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
+            WebAuthn ceremony sequence diagram
+            {flowType && <span style={{ marginLeft: 8, color: T.accent }}>· {flowType}</span>}
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
-          <input type="file" accept="application/json" onChange={handleFileChange} style={{ marginLeft: 0 }} />
-          <button type="button" onClick={handleLoad} style={{ padding: '8px 16px', borderRadius: 4, border: '1px solid #0f62fe', background: '#eaf3ff', fontWeight: 600, cursor: 'pointer' }}>Load</button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: T.surfaceAlt, border: `1px solid ${T.border}`,
+            borderRadius: 6, padding: '7px 12px', cursor: 'pointer',
+            fontSize: 13, color: T.textMuted,
+          }}>
+            <span>📂</span>
+            <span>{selectedFile ? selectedFile.name : 'Choose JSON export'}</span>
+            <input type="file" accept="application/json" onChange={handleFileChange} style={{ display: 'none' }} />
+          </label>
+          <button
+            onClick={handleLoad}
+            style={{
+              background: T.accent, color: '#ffffff', border: 'none',
+              borderRadius: 6, padding: '8px 18px', fontWeight: 700,
+              fontSize: 13, cursor: 'pointer', letterSpacing: '0.3px',
+            }}
+          >
+            Load
+          </button>
         </div>
-        <div
-          key={diagramKey}
-          ref={diagramRef}
-          style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '24px', overflowX: 'auto', marginTop: 16 }}
-        />
       </div>
-      {/* Right-side card for selected event */}
-      <div style={{ flex: 1.3, minWidth: 400, maxWidth: 600, background: '#f8fafd', border: '1px solid #e0e0e0', borderRadius: 10, padding: '24px 24px', marginTop: 48, height: 'fit-content' }}>
-        <h2 style={{ fontSize: 20, marginBottom: 12 }}>Event Details</h2>
-        {selectedEvent ? (
-          <div>
-            <div style={{ marginBottom: 10 }}>
-              <b>Step / Type:</b> {selectedEvent.step || selectedEvent.endpoint || selectedEvent.type || 'event'}
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <b>From:</b> {(() => {
-                if (selectedEvent.direction === 'frontend->backend' || selectedEvent.source === 'frontend') return 'Frontend';
-                if (selectedEvent.direction === 'backend->frontend' || selectedEvent.source === 'backend') return 'Backend';
-                if (selectedEvent.direction === 'browser->frontend') return 'Browser';
-                if (selectedEvent.direction === 'frontend->browser') return 'Frontend';
-                if (!selectedEvent.direction && selectedEvent.source === 'frontend' && selectedEvent.step && selectedEvent.step.toLowerCase().includes('browser')) return 'Browser';
-                return 'Frontend';
-              })()}
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <b>To:</b> {(() => {
-                if (selectedEvent.direction === 'frontend->backend' || selectedEvent.source === 'frontend') return 'Backend';
-                if (selectedEvent.direction === 'backend->frontend' || selectedEvent.source === 'backend') return 'Frontend';
-                if (selectedEvent.direction === 'browser->frontend') return 'Frontend';
-                if (selectedEvent.direction === 'frontend->browser') return 'Browser';
-                if (!selectedEvent.direction && selectedEvent.source === 'frontend' && selectedEvent.step && selectedEvent.step.toLowerCase().includes('browser')) return 'Frontend';
-                return 'Backend';
-              })()}
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <b>Timestamp:</b> {selectedEvent.timestamp ? new Date(selectedEvent.timestamp).toLocaleString() : ''}
-            </div>
-            {selectedEvent && (() => {
-              const derived = generateAnnotations(selectedEvent);
-              // Remove annotation items whose label matches a payload key or is already described in the breakdown
-              const payloadKeys = selectedEvent && selectedEvent.payloadRaw && typeof selectedEvent.payloadRaw === 'object'
-                ? new Set(Object.keys(selectedEvent.payloadRaw).map(k => k.toLowerCase()))
-                : new Set();
-              // Also filter out annotation labels that are substrings of payload keys (for array/compound fields)
-              const filtered = derived.filter(ann => {
-                const label = ann.label.toLowerCase();
-                // Remove if label is a payload key or is contained in any payload key
-                if (payloadKeys.has(label)) return false;
-                for (const k of payloadKeys) {
-                  if (k.includes(label) || label.includes(k)) return false;
-                }
-                // Remove if label is a common field described in fieldDescription
-                const commonFields = [
-                  'challenge', 'allowcredentials', 'excludecredentials', 'type', 'id', 'rawid', 'transports',
-                  'userverification', 'timeout', 'rpid', 'rp', 'user', 'username', 'displayname',
-                  'authenticatordata', 'clientdatajson', 'signature', 'userhandle', 'attestationobject',
-                  'publickey', 'publickeyalgorithm', 'verified', 'storedcounter', 'reportedcounter',
-                  'nextcounter', 'counterdidregress', 'success', 'hasresponse', 'hasassertion', 'assertion',
-                  'origin', 'crossorigin', 'email', 'pubkeycredparams', 'alg', 'authenticatorselection',
-                  'authenticatorattachment', 'residentkey', 'attestation', 'extensions'
-                ];
-                if (commonFields.includes(label.replace(/\s/g, '').toLowerCase())) return false;
-                return true;
-              });
-              return (
-                <div style={{ marginBottom: 10 }}>
-                  <b>Summary</b>
-                  <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {filtered.length === 0 ? (
-                      <span style={{ color: '#888', fontSize: 13 }}>No additional summary for this event.</span>
-                    ) : filtered.map((ann, i) => {
-                      const s = TYPE_STYLES[ann.type] || TYPE_STYLES.info;
-                      return (
-                        <div key={i} style={{
-                          border: s.border,
-                          background: s.background,
-                          borderRadius: 6,
-                          padding: '8px 10px',
-                          fontSize: 13,
-                          display: 'flex', alignItems: 'center', gap: 8
-                        }}>
-                          <span style={{
-                            width: 8, height: 8, borderRadius: '50%',
-                            background: s.dot, flexShrink: 0, display: 'inline-block',
-                          }}/>
-                          <span style={{ fontWeight: 600, color: s.labelColor, fontSize: 12, marginRight: 8 }}>
-                            {ann.label}
-                          </span>
-                          <span style={{ color: '#333', lineHeight: 1.5 }}>{ann.detail}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-            <div style={{ marginBottom: 10 }}>
-              <b>Raw Payload:</b>
-              <pre style={{ margin: 0, background: '#121212', color: '#e7e7e7', fontSize: '12px', lineHeight: '1.5', padding: '10px', borderRadius: '6px', overflowX: 'auto' }}>
-                {selectedEvent.payloadRaw ? pretty(selectedEvent.payloadRaw) : 'None'}
-              </pre>
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <b>Payload Breakdown:</b>
-              <div style={{ background: '#f3f3f3', borderRadius: 4, padding: 8, fontSize: 14, margin: 0, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                {selectedEvent.payloadRaw ? describePayload(selectedEvent.payloadRaw) : 'None'}
-              </div>
+
+      {error && (
+        <div style={{ background: T.redDim, border: `1px solid ${T.red}`, borderRadius: 6, padding: '10px 20px', margin: '12px 20px', color: T.red, fontSize: 13 }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {events.length === 0 && !error && (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16, color: T.textMuted }}>
+          <div style={{ fontSize: 48 }}>🔑</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: T.text }}>Load a passkey flow export to begin</div>
+          <div style={{ fontSize: 13 }}>Supports registration and authentication JSON exports</div>
+        </div>
+      )}
+
+      {events.length > 0 && (
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', gap: 0 }}>
+          {/* Diagram panel */}
+          <div style={{
+            flex: 2,
+            overflowY: 'auto',
+            overflowX: 'auto',
+            padding: '20px 16px',
+            background: T.bg,
+          }} ref={diagramContainerRef}>
+            <Legend />
+            <div style={{ minWidth: 700 }}>
+              <SequenceDiagram
+                events={events}
+                selectedIdx={selectedIdx}
+                onSelect={setSelectedIdx}
+              />
             </div>
           </div>
-        ) : (
-          <div>No event selected.</div>
-        )}
-      </div>
+
+          {/* Detail panel */}
+          <div style={{
+            width: 420,
+            minWidth: 340,
+            flexShrink: 0,
+            overflowY: 'auto',
+            background: T.surface,
+            borderLeft: `1px solid ${T.border}`,
+            padding: '20px 20px 40px',
+          }}>
+            {selectedEvent ? (
+              <>
+                {/* Step badge */}
+                <div style={{
+                  background: T.surfaceAlt,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 8,
+                  padding: '12px 14px',
+                  marginBottom: 16,
+                }}>
+                  <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                    {selectedEvent._synthetic ? '⬡ synthetic (inferred)' : '● captured event'}
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: T.accent, wordBreak: 'break-all' }}>
+                    {selectedEvent.step || selectedEvent.endpoint || 'event'}
+                  </div>
+                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    {[
+                      ['From', from],
+                      ['To', to],
+                      ['Source', selectedEvent.source || '—'],
+                      ['Direction', selectedEvent.direction || '—'],
+                    ].map(([label, val]) => (
+                      <div key={label}>
+                        <div style={{ fontSize: 10, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
+                        <div style={{ fontSize: 13, color: ACTOR_META[val]?.textColor || T.text, fontWeight: 600 }}>
+                          {ACTOR_META[val]?.icon} {ACTOR_META[val]?.label || val}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ gridColumn: '1/-1' }}>
+                      <div style={{ fontSize: 10, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Timestamp</div>
+                      <div style={{ fontSize: 12, color: T.textMuted }}>
+                        {selectedEvent.timestamp ? new Date(selectedEvent.timestamp).toLocaleString() : '—'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Navigation */}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                  <button
+                    disabled={selectedIdx === 0}
+                    onClick={() => setSelectedIdx(i => Math.max(0, i - 1))}
+                    style={{
+                      flex: 1, background: T.surfaceAlt, border: `1px solid ${T.border}`,
+                      borderRadius: 6, color: T.text, cursor: selectedIdx === 0 ? 'not-allowed' : 'pointer',
+                      padding: '7px', fontSize: 13, opacity: selectedIdx === 0 ? 0.4 : 1,
+                    }}
+                  >← Prev</button>
+                  <span style={{ lineHeight: '34px', fontSize: 12, color: T.textMuted, minWidth: 60, textAlign: 'center' }}>
+                    {selectedIdx + 1} / {events.length}
+                  </span>
+                  <button
+                    disabled={selectedIdx === events.length - 1}
+                    onClick={() => setSelectedIdx(i => Math.min(events.length - 1, i + 1))}
+                    style={{
+                      flex: 1, background: T.surfaceAlt, border: `1px solid ${T.border}`,
+                      borderRadius: 6, color: T.text, cursor: selectedIdx === events.length - 1 ? 'not-allowed' : 'pointer',
+                      padding: '7px', fontSize: 13, opacity: selectedIdx === events.length - 1 ? 0.4 : 1,
+                    }}
+                  >Next →</button>
+                </div>
+
+                {/* Annotations */}
+                {annotations.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>Summary</div>
+                    {annotations.map((ann, i) => <AnnotationCard key={i} ann={ann} />)}
+                  </div>
+                )}
+
+                {/* Raw payload */}
+                {selectedEvent.payloadRaw && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px' }}>Raw Payload</div>
+                      <button
+                        type="button"
+                        onClick={handleCopyPayload}
+                        style={{
+                          border: `1px solid ${T.border}`,
+                          background: T.surfaceAlt,
+                          color: T.text,
+                          borderRadius: 6,
+                          padding: '4px 8px',
+                          fontSize: 11,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {copiedPayload ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    <pre style={{
+                      background: '#f6f8fa', color: '#1f2328', fontSize: 11,
+                      lineHeight: 1.6, padding: '12px', borderRadius: 6,
+                      overflowX: 'auto', border: `1px solid ${T.border}`,
+                      margin: 0,
+                    }}>
+                      {JSON.stringify(selectedEvent.payloadRaw, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Payload breakdown */}
+                {selectedEvent.payloadRaw && (
+                  <div>
+                    <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>Field Breakdown</div>
+                    <div style={{
+                      background: T.surfaceAlt, borderRadius: 6,
+                      padding: '12px', fontSize: 13,
+                      border: `1px solid ${T.border}`,
+                    }}>
+                      <PayloadTree payload={selectedEvent.payloadRaw} />
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: T.textMuted, textAlign: 'center', marginTop: 60 }}>
+                Click an arrow in the diagram to inspect it
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

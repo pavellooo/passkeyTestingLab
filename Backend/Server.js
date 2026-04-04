@@ -124,6 +124,15 @@ const recordTraceEvent = (traceId, event) => {
     }
 };
 
+const recordDbTraceEvent = (traceId, phase, step, payloadRaw) => {
+    recordTraceEvent(traceId, {
+        source: 'backend',
+        direction: 'internal',
+        step: `db.${phase}.${step}`,
+        payloadRaw: sanitizeForTrace(payloadRaw)
+    });
+};
+
 // Trust proxy - required for Heroku to get real IP addresses
 app.set('trust proxy', 1);
 
@@ -335,7 +344,17 @@ app.post('/webauthn/register', authLimiter, (req, res) => {
 
     // Check if the user already exists
     const checkUserQuery = `SELECT * FROM users WHERE email = ?`;
+    recordDbTraceEvent(req.traceId, 'query', 'users.lookupByEmail', {
+        email: validatedEmail,
+        operation: 'select'
+    });
     con.query(checkUserQuery, [validatedEmail], (err, results) => {
+        recordDbTraceEvent(req.traceId, 'result', 'users.lookupByEmail', {
+            ok: !err,
+            rowCount: Array.isArray(results) ? results.length : 0,
+            error: err ? err.message : null
+        });
+
         if (err) {
             console.error('Error checking user:', err);
             return res.status(500).json({ error: 'Database error' });
@@ -421,10 +440,11 @@ app.post('/webauthn/register/complete', (req, res) => {
         return res.status(404).json({ error: 'No pending registration found. Please start registration again.' });
     }
 
+    const traceId = req.traceId || pendingReg.traceId;
     const { challenge: storedChallenge, userId } = pendingReg;
     const parsedCredential = credential;
 
-    recordTraceEvent(req.traceId || pendingReg.traceId, {
+    recordTraceEvent(traceId, {
         source: 'backend',
         direction: 'internal',
         step: 'registration.complete.received',
@@ -445,7 +465,7 @@ app.post('/webauthn/register/complete', (req, res) => {
             // Extract the verification result and registration information
             const { verified, registrationInfo } = verification;
 
-            recordTraceEvent(req.traceId || pendingReg.traceId, {
+            recordTraceEvent(traceId, {
                 source: 'backend',
                 direction: 'internal',
                 step: 'registration.verify.result',
@@ -492,6 +512,11 @@ app.post('/webauthn/register/complete', (req, res) => {
                     INSERT INTO users (email, user_id, credential, public_key, credential_id, counter, challenge) 
                     VALUES (?, ?, ?, ?, ?, ?, NULL)
                 `;
+
+                recordDbTraceEvent(traceId, 'query', 'users.insertCredential', {
+                    email,
+                    operation: 'insert'
+                });
                 
                 // Execute the SQL query to insert the user's complete information
                 con.query(insertUserQuery, [
@@ -502,6 +527,12 @@ app.post('/webauthn/register/complete', (req, res) => {
                     credentialIDBase64url, 
                     initialCounter
                 ], (dbError) => {
+                    recordDbTraceEvent(traceId, 'result', 'users.insertCredential', {
+                        ok: !dbError,
+                        credentialId: credentialIDBase64url,
+                        error: dbError ? dbError.message : null
+                    });
+
                     // Handle any database errors during credential storage
                     if (dbError) {
                         console.error('Error storing user:', dbError);
@@ -561,7 +592,17 @@ app.post('/webauthn/authenticate', authLimiter, (req, res) => {
 
     // Store challenge in database
     const updateChallengeQuery = `UPDATE users SET challenge = ? WHERE email = ?`;
+    recordDbTraceEvent(req.traceId, 'query', 'users.updateChallenge', {
+        email: validatedEmail,
+        operation: 'update'
+    });
     con.query(updateChallengeQuery, [challenge, validatedEmail], (err) => {
+        recordDbTraceEvent(req.traceId, 'result', 'users.updateChallenge', {
+            ok: !err,
+            email: validatedEmail,
+            error: err ? err.message : null
+        });
+
         if (err) {
             console.error('Error updating challenge:', err);
             return res.status(500).json({ error: 'Database error' });
@@ -569,7 +610,17 @@ app.post('/webauthn/authenticate', authLimiter, (req, res) => {
 
         // Retrieve the credential ID for this user
         const getCredentialQuery = `SELECT credential_id FROM users WHERE email = ?`;
+        recordDbTraceEvent(req.traceId, 'query', 'users.getCredentialId', {
+            email: validatedEmail,
+            operation: 'select'
+        });
         con.query(getCredentialQuery, [validatedEmail], (err, results) => {
+            recordDbTraceEvent(req.traceId, 'result', 'users.getCredentialId', {
+                ok: !err,
+                rowCount: Array.isArray(results) ? results.length : 0,
+                error: err ? err.message : null
+            });
+
             if (err) {
                 console.error('Error fetching credential ID:', err);
                 return res.status(500).json({ error: 'Database error' });
@@ -618,8 +669,18 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
 
     // Get the user data needed for verification
     const getUserDataQuery = `SELECT challenge, public_key, credential_id, counter FROM users WHERE email = ?`;
+    recordDbTraceEvent(req.traceId, 'query', 'users.getAuthMaterial', {
+        email,
+        operation: 'select'
+    });
     
     con.query(getUserDataQuery, [email], async (err, results) => {
+        recordDbTraceEvent(req.traceId, 'result', 'users.getAuthMaterial', {
+            ok: !err,
+            rowCount: Array.isArray(results) ? results.length : 0,
+            error: err ? err.message : null
+        });
+
         if (err) {
             console.error('Error fetching user data:', err);
             return res.status(500).json({ error: 'Database error' });
@@ -733,7 +794,19 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
             
             // Update the counter and clear the challenge
             const updateUserQuery = `UPDATE users SET challenge = NULL, counter = ? WHERE email = ?`;
+            recordDbTraceEvent(req.traceId, 'query', 'users.updateCounterAndClearChallenge', {
+                email,
+                nextCounter,
+                operation: 'update'
+            });
             con.query(updateUserQuery, [nextCounter, email], (updateErr) => {
+                recordDbTraceEvent(req.traceId, 'result', 'users.updateCounterAndClearChallenge', {
+                    ok: !updateErr,
+                    email,
+                    nextCounter,
+                    error: updateErr ? updateErr.message : null
+                });
+
                 if (updateErr) {
                     console.error('Error updating user data:', updateErr);
                     return res.status(500).json({ error: 'Database error' });
