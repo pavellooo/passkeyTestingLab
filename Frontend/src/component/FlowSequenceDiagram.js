@@ -700,47 +700,15 @@ function mergeAndSortEvents(rawEvents, syntheticEvents) {
     return true;
   });
 
-  // Collapse captured db.query/db.result pairs into one visual event to reduce noise.
-  const collapsedDb = [];
-  for (let i = 0; i < filtered.length; i += 1) {
-    const current = filtered[i];
-    const next = filtered[i + 1];
-    const currentStep = String(current?.step || '').toLowerCase();
-    const nextStep = String(next?.step || '').toLowerCase();
-
-    const currentDbSuffix = currentStep.startsWith('db.query.') ? currentStep.slice('db.query.'.length) : null;
-    const nextDbSuffix = nextStep.startsWith('db.result.') ? nextStep.slice('db.result.'.length) : null;
-
-    if (
-      currentDbSuffix &&
-      nextDbSuffix &&
-      currentDbSuffix === nextDbSuffix &&
-      current.source === 'backend' &&
-      next.source === 'backend'
-    ) {
-      collapsedDb.push({
-        ...current,
-        payloadRaw: {
-          ...(current.payloadRaw || {}),
-          dbResult: next.payloadRaw || {},
-        },
-      });
-      i += 1;
-      continue;
-    }
-
-    collapsedDb.push(current);
-  }
-
   // Mark frontend inbound events that are simply the client-side receipt of an already-captured backend http.response.
-  const backendHttpResponses = collapsedDb
+  const backendHttpResponses = filtered
     .filter((ev) => !ev._synthetic && ev.source === 'backend' && ev.direction === 'outbound' && ev.step === 'http.response' && ev.endpoint)
     .map((ev) => ({
       endpoint: ev.endpoint,
       ts: Date.parse(ev.timestamp || '') || 0,
     }));
 
-  return collapsedDb.map((ev) => {
+  return filtered.map((ev) => {
     if (ev._synthetic) return ev;
     if (!(ev.source === 'frontend' && ev.direction === 'inbound' && ev.endpoint)) return ev;
 
@@ -860,22 +828,16 @@ function buildPayloadPreviewLines(ev) {
   if (step === 'http.response' && endpoint === '/webauthn/authenticate/complete' && (p.accessToken || p.refreshToken)) {
     return [
       `success: ${String(Boolean(p.success))}`,
-      'jwtPayload: see auth.jwt.issued',
+      'jwtPayload: { ... }',
       `mode: ${p.insecureDemoMode ? 'insecure-demo' : 'secure-standard'}`,
     ];
   }
 
   if (step === 'authentication.complete.response' && (p.accessToken || p.refreshToken)) {
-
-        if (step.startsWith('db.query.') && p.dbResult && typeof p.dbResult === 'object') {
-          const resultState = p.dbResult.ok === true ? 'ok' : p.dbResult.ok === false ? 'failed' : 'result';
-          const rowPart = typeof p.dbResult.rowCount === 'number' ? `rows:${p.dbResult.rowCount}` : '';
-          return [`op: ${p.operation || 'query'}`, `result: ${resultState}`, rowPart].filter(Boolean);
-        }
     return [
       `success: ${String(Boolean(p.success))}`,
       `jwtMode: ${p.jwtMode || (p.insecureDemoMode ? 'insecure-demo' : 'secure-standard')}`,
-      'jwtPayload: see auth.jwt.issued',
+      'jwtPayload: { ... }',
     ];
   }
 
@@ -892,6 +854,8 @@ function buildPayloadPreviewLines(ev) {
     let vStr = '';
     if (typeof v === 'string') {
       vStr = trimWithEllipsis(v, PAYLOAD_VALUE_MAX_CHARS);
+    } else if (v === null) {
+      vStr = 'null';
     } else if (typeof v === 'number' || typeof v === 'boolean') {
       vStr = String(v);
     } else if (Array.isArray(v)) {
@@ -1355,22 +1319,6 @@ function generateAnnotations(ev) {
       label: 'Database query started',
       detail: 'The backend is asking MySQL for data or updating a row. This is the request side of the database round trip.',
     });
-        if (p.dbResult && typeof p.dbResult === 'object') {
-          if (p.dbResult.ok === true) {
-            annotations.push({
-              type: 'success',
-              label: 'Database responded successfully',
-              detail: `The paired DB response for this query returned successfully.${typeof p.dbResult.rowCount === 'number' ? ` Rows matched: ${p.dbResult.rowCount}.` : ''}`,
-            });
-          }
-          if (Object.prototype.hasOwnProperty.call(p.dbResult, 'error') && p.dbResult.error === null) {
-            annotations.push({
-              type: 'info',
-              label: 'No database error',
-              detail: 'The DB response includes error=null, which means no SQL/connection error occurred.',
-            });
-          }
-        }
   }
 
   if (step.startsWith('db.result.')) {
@@ -1475,7 +1423,6 @@ function fieldDescription(key, value) {
       ? 'No database error occurred. null here is good and means the SQL operation succeeded.'
       : `Database error text. Non-null values indicate a SQL/connection issue: ${value}`,
     operation: `Database action type: "${value}". Common values: select (read), insert (create), update (modify).`,
-      dbResult: 'Paired database response payload for this query. Includes success (ok), rowCount, and error details.',
     accessToken: 'JWT access token. In this demo it is intentionally visible in the payload for inspection. In production this should remain hidden and only stored in secure, httpOnly cookies.',
     refreshToken: 'JWT refresh token. In this demo it is intentionally visible for learning. In production it should be protected and never exposed in trace payloads.',
     jwtMode: value === 'insecure-demo'
