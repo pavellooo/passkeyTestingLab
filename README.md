@@ -18,8 +18,22 @@ The sequence diagram page (`/flow-diagram`) now works by uploading a JSON trace 
 4. Click "Load" to visualize the full event sequence as a diagram.
 
 Features:
-- All events from the uploaded trace are shown in the diagram.
-- Clickable overlays highlight each event.
+- Four-lane sequence diagram: Secure Storage/Authenticator, Browser, Backend Server, Database.
+- Captured backend DB trace events (`db.query.*`, `db.result.*`) are rendered as Backend <-> Database arrows.
+- Missing lanes can be inferred with synthetic events (marked in the details panel as `synthetic (inferred)`).
+- Click any arrow/note to inspect details.
+- Event details panel includes:
+   - 1 to 3 summary bubbles (plain-English explanations)
+   - Raw payload JSON
+   - Copy button for raw payload
+   - Field-by-field breakdown
+- Frontend "response received" mirror events are shown as internal browser handling (to avoid double-counting backend responses).
+
+### Sequence Diagram Notes
+
+- `error: null` in DB result payloads means there was **no** SQL/database error.
+- `ok: true` means the DB operation completed successfully.
+- `rowCount` indicates how many rows were returned/matched.
 
 
 For details on the planning and current status of the project, see [PASSKEY_FLOW_VISIBILITY_PLAN.md](PASSKEY_FLOW_VISIBILITY_PLAN.md).
