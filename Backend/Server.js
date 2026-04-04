@@ -30,6 +30,18 @@ const readRequiredMultilineEnv = (envName) => {
 
 const privateKey = readRequiredMultilineEnv('JWT_PRIVATE_KEY');
 const publicKey = readRequiredMultilineEnv('JWT_PUBLIC_KEY');
+const defaultInsecureDemoMode = String(process.env.INSECURE_DEMO_MODE || 'true').toLowerCase() === 'true';
+const exposeJwtInTrace = String(process.env.EXPOSE_JWT_IN_TRACE || (defaultInsecureDemoMode ? 'true' : 'false')).toLowerCase() === 'true';
+
+const isInsecureDemoRequest = (req) => {
+    const header = req.headers['x-insecure-demo-mode'];
+    if (typeof header === 'string') {
+        const normalized = header.trim().toLowerCase();
+        if (normalized === 'true') return true;
+        if (normalized === 'false') return false;
+    }
+    return defaultInsecureDemoMode;
+};
 
 const app = express();
 
@@ -78,7 +90,7 @@ const sanitizeForTrace = (value, seen = new WeakSet()) => {
     const sanitized = {};
     Object.keys(value).forEach((key) => {
         const lowered = key.toLowerCase();
-        if (lowered.includes('token') || lowered.includes('cookie') || lowered.includes('authorization')) {
+        if (!exposeJwtInTrace && (lowered.includes('token') || lowered.includes('cookie') || lowered.includes('authorization'))) {
             sanitized[key] = '[MASKED]';
             return;
         }
@@ -816,24 +828,57 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
                 
                 const accessToken = generateAccessToken(email, results[0].user_id);
                 const refreshToken = generateRefreshToken(email, results[0].user_id);
+
+                const insecureDemoMode = isInsecureDemoRequest(req);
+
+                recordTraceEvent(req.traceId, {
+                    source: 'backend',
+                    direction: 'outbound',
+                    step: 'authentication.jwt.issued',
+                    endpoint: '/webauthn/authenticate/complete',
+                    payloadRaw: sanitizeForTrace({
+                        accessToken: insecureDemoMode ? accessToken : '[MASKED_IN_SECURE_MODE]',
+                        refreshToken: insecureDemoMode ? refreshToken : '[MASKED_IN_SECURE_MODE]',
+                        cookieOptions: {
+                            httpOnly: true,
+                            secure: insecureDemoMode ? false : true,
+                            sameSite: insecureDemoMode ? false : 'Strict',
+                            path: '/'
+                        },
+                        insecureDemoMode
+                    })
+                });
                 
                 res.cookie('accessToken', accessToken, {
                     httpOnly: true,
-                    secure: true,
-                    sameSite: 'Strict',
+                    secure: insecureDemoMode ? false : true,
+                    sameSite: insecureDemoMode ? false : 'Strict',
                     path: '/',
                     maxAge: 15 * 60 * 1000 // 15 minutes
                 });
 
                 res.cookie('refreshToken', refreshToken, {
                     httpOnly: true,
-                    secure: true,
-                    sameSite: 'Strict',
+                    secure: insecureDemoMode ? false : true,
+                    sameSite: insecureDemoMode ? false : 'Strict',
                     path: '/',
                     maxAge: 24 * 60 * 60 * 1000 // 1 day
                 });
 
-                return res.json({ success: true });
+                return res.json(insecureDemoMode
+                    ? {
+                        success: true,
+                        accessToken,
+                        refreshToken,
+                        insecureDemoMode,
+                        cookieOptions: {
+                            httpOnly: true,
+                            secure: false,
+                            sameSite: false,
+                            path: '/'
+                        }
+                    }
+                    : { success: true });
             });
         } catch (error) {
             console.error('Authentication verification error:', error);

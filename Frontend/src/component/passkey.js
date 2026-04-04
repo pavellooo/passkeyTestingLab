@@ -9,6 +9,7 @@ const FLOW_EVENT_UPDATED = 'passkey-flow-updated';
 const FLOW_EVENTS_STORAGE_KEY = 'passkeyFlowEvents';
 const FLOW_EVENTS_TTL_MS = 5 * 60 * 1000;
 const FLOW_EVENTS_CHANNEL_NAME = 'passkey-flow-events';
+const INSECURE_DEMO_MODE = String(process.env.REACT_APP_INSECURE_DEMO_MODE || 'true').toLowerCase() === 'true';
 
 let flowEventsChannel;
 
@@ -119,7 +120,7 @@ const sanitizePayload = (value, seen = new WeakSet()) => {
   const sanitized = {};
   Object.keys(value).forEach((key) => {
     const lowered = key.toLowerCase();
-    if (lowered.includes('token') || lowered.includes('cookie') || lowered.includes('authorization')) {
+    if (!INSECURE_DEMO_MODE && (lowered.includes('token') || lowered.includes('cookie') || lowered.includes('authorization'))) {
       sanitized[key] = '[MASKED]';
       return;
     }
@@ -169,6 +170,8 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
   const [error, setError] = useState('');
   const [isLoginView, setIsLoginView] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [useInsecureJwtMode, setUseInsecureJwtMode] = useState(true);
+  const [showJwtDetails, setShowJwtDetails] = useState(false);
   const navigate = useNavigate();
 
   // Helper functions remain the same
@@ -399,6 +402,7 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
         withCredentials: true,
         headers: {
           'x-passkey-trace-id': traceId,
+          'x-insecure-demo-mode': String(useInsecureJwtMode),
         },
       });
 
@@ -408,13 +412,16 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
         step: 'authentication.complete.response',
         direction: 'inbound',
         endpoint: '/webauthn/authenticate/complete',
-        payloadRaw: response.data,
+        payloadRaw: {
+          ...response.data,
+          jwtMode: useInsecureJwtMode ? 'insecure-demo' : 'secure-standard',
+        },
       });
 
       if (response.data.success) {
         // Store the token in a secure cookie for session persistence
-        if (response.data.token) {
-          console.log('Setting token in secure cookie:', response.data.token);
+        if (response.data.accessToken || response.data.refreshToken || response.data.token) {
+          console.log('JWT payload present in demo response payload.');
           // Removed document.cookie usage. Backend now handles secure cookies
         } else {
           console.log('No token received from backend');
@@ -452,17 +459,47 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
     }
   };
 
+  const secureCookieExample = {
+    accessToken: '[NOT EXPOSED IN PAYLOAD]',
+    refreshToken: '[NOT EXPOSED IN PAYLOAD]',
+    cookieOptions: {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      path: '/',
+    },
+  };
+
+  const insecureCookieExample = {
+    accessToken: '<real_jwt_visible_in_demo>',
+    refreshToken: '<real_refresh_jwt_visible_in_demo>',
+    cookieOptions: {
+      httpOnly: true,
+      secure: false,
+      sameSite: false,
+      path: '/',
+    },
+  };
+
   return (
     <div style={{
-      textAlign: 'center',
-      marginTop: '50px',
-      maxWidth: '450px',
       margin: '50px auto',
-      padding: '20px',
-      borderRadius: '8px',
-      boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
-      background: '#fff',
+      maxWidth: '980px',
+      padding: '0 12px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '14px',
+      alignItems: 'center',
     }}>
+      <div style={{
+        textAlign: 'center',
+        width: '100%',
+        maxWidth: '450px',
+        padding: '20px',
+        borderRadius: '8px',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
+        background: '#fff',
+      }}>
       <h1>{isLoginView ? 'Login' : 'Register'}</h1>
 
       <div style={{ marginBottom: '20px' }}>
@@ -560,6 +597,112 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
           </p>
         )}
       </div>
+
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setShowJwtDetails((prev) => !prev)}
+        style={{
+          width: '100%',
+          maxWidth: '950px',
+          padding: '10px 12px',
+          border: '1px solid #d0d7de',
+          background: '#f6f8fa',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          textAlign: 'left',
+          fontSize: '13px',
+          fontWeight: 600,
+          color: '#1f2937',
+        }}
+      >
+        {showJwtDetails ? 'Hide JWT Details' : 'Show JWT Details'}
+      </button>
+
+      {showJwtDetails && (
+      <>
+      <div style={{
+        width: '100%',
+        maxWidth: '950px',
+        border: '1px solid #d0d7de',
+        borderRadius: '8px',
+        padding: '12px',
+        background: '#fafbfc',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.06)',
+      }}>
+        <div style={{
+          textAlign: 'left',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          marginBottom: '10px',
+        }}>
+          <input
+            id="jwt-demo-mode"
+            type="checkbox"
+            checked={useInsecureJwtMode}
+            onChange={(e) => setUseInsecureJwtMode(e.target.checked)}
+          />
+          <label htmlFor="jwt-demo-mode" style={{ fontSize: '13px' }}>
+            Use insecure demo JWT payload mode for authentication flow
+          </label>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '10px',
+          textAlign: 'left',
+        }}>
+          <div style={{ border: '1px solid #cfd8dc', borderRadius: '6px', padding: '8px', background: '#f8fbff' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>Secure JWT Example</div>
+            <pre style={{ margin: 0, fontSize: '10px', lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {JSON.stringify(secureCookieExample, null, 2)}
+            </pre>
+          </div>
+          <div style={{ border: '1px solid #f0ad4e', borderRadius: '6px', padding: '8px', background: '#fff8e1' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '6px' }}>Current Insecure Demo Payload</div>
+            <pre style={{ margin: 0, fontSize: '10px', lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {JSON.stringify(insecureCookieExample, null, 2)}
+            </pre>
+          </div>
+        </div>
+      </div>
+
+      {INSECURE_DEMO_MODE && (
+        <div style={{
+          width: '100%',
+          maxWidth: '950px',
+          textAlign: 'left',
+          border: '1px solid #f0ad4e',
+          background: '#fff8e1',
+          color: '#7a4b00',
+          borderRadius: '6px',
+          padding: '10px 12px',
+          fontSize: '13px',
+          lineHeight: 1.4,
+        }}>
+          Insecure demo mode disclaimer: real JWT values can be included in flow payloads and cookie flags may be relaxed (for example sameSite=false, secure=false) for visibility. This is intentionally insecure and must not be used in production.
+        </div>
+      )}
+
+      <div style={{
+        width: '100%',
+        maxWidth: '950px',
+        textAlign: 'left',
+        border: '1px solid #d0d7de',
+        background: '#f8fbff',
+        color: '#1f2937',
+        borderRadius: '6px',
+        padding: '10px 12px',
+        fontSize: '13px',
+        lineHeight: 1.45,
+      }}>
+        <strong>What is a JWT access token?</strong> A JWT (JSON Web Token) is a signed string that tells the server who you are after login. The access token is short-lived and is sent with requests so protected endpoints can verify your session without asking you to log in again every time. They are only added during login, not registration.
+      </div>
+      </>
+      )}
     </div>
   );
 }

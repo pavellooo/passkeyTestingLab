@@ -20,6 +20,7 @@ The sequence diagram page (`/flow-diagram`) now works by uploading a JSON trace 
 Features:
 - Four-lane sequence diagram: Secure Storage/Authenticator, Browser, Backend Server, Database.
 - Captured backend DB trace events (`db.query.*`, `db.result.*`) are rendered as Backend <-> Database arrows.
+- DB round-trips may be visually collapsed in the diagram view to reduce duplicate-looking query/result noise while preserving captured payload fidelity in details.
 - Missing lanes can be inferred with synthetic events (marked in the details panel as `synthetic (inferred)`).
 - Click any arrow/note to inspect details.
 - Event details panel includes:
@@ -28,6 +29,16 @@ Features:
    - Copy button for raw payload
    - Field-by-field breakdown
 - Frontend "response received" mirror events are shown as internal browser handling (to avoid double-counting backend responses).
+
+### Login Page JWT Visibility Controls
+
+The passkey login/register page now includes explicit JWT visibility controls:
+
+- `Show JWT Details` / `Hide JWT Details` toggle to expand or collapse the JWT detail section.
+- `Use insecure demo JWT payload mode for authentication flow` checkbox to request insecure demo payload behavior for testing.
+- Secure vs insecure example payload cards to show expected token/cookie handling differences.
+
+Note: These controls are for local testing and education only. Insecure demo payload visibility and relaxed cookie flags must never be used in production.
 
 ### Sequence Diagram Notes
 

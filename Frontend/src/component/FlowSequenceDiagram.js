@@ -102,6 +102,10 @@ function buildSyntheticEvents(rawEvents, flowType) {
     const step = String(event?.step || '').toLowerCase();
     return step.startsWith('db.query.') || step.startsWith('db.result.');
   });
+    const hasCapturedJwtIssued = rawEvents.some((event) => {
+      const step = String(event?.step || '').toLowerCase();
+      return step === 'authentication.jwt.issued';
+    });
 
   rawEvents.forEach((ev) => {
     const step = (ev.step || '').toLowerCase();
@@ -230,46 +234,7 @@ function buildSyntheticEvents(rawEvents, flowType) {
       });
     }
 
-    // ── Authentication: secure storage returns signed assertion ───────────────
-    if (step === 'browser.get.completed') {
-      synthetic.push({
-        _synthetic: true,
-        _id: `syn-get-resp-${ev.uiId}`,
-        timestamp: ev.timestamp,
-        source: 'frontend',
-        direction: 'internal',
-        step: 'authenticator.get.response',
-        endpoint: 'Signed assertion returned',
-        from: 'SecureStorage',
-        to: 'Browser',
-        label: 'Signed assertion returned',
-        sublabel: `id: ${p.id || '…'} · authenticatorData + clientDataJSON + signature`,
-        arrowStyle: 'webauthn',
-        payloadRaw: {
-          credentialId: p.id,
-          type: p.type || 'public-key',
-          hasResponse: p.hasResponse,
-          note: 'authenticatorData, clientDataJSON, signature, userHandle present in full assertion',
-        },
-        summaryAnnotations: [
-          {
-            type: 'success',
-            label: 'Private key signed',
-            detail: 'The secure enclave used the private key to sign (authenticatorData ‖ hash(clientDataJSON)). The signature proves possession of the private key without ever revealing it.',
-          },
-          {
-            type: 'info',
-            label: 'Counter incremented',
-            detail: 'authenticatorData contains an updated sign-count. The server will compare this to the stored value to detect credential cloning.',
-          },
-          {
-            type: 'info',
-            label: 'User handle included',
-            detail: 'The userHandle (opaque user ID) is returned so the server can identify the account even in username-less (discoverable credential) flows.',
-          },
-        ],
-      });
-    }
+    // browser.get.completed already represents the assertion return in captured traces.
 
     // ── Registration: backend looks up / creates user in DB ──────────────────
     if (!hasCapturedDbTrace && step === 'registration.start' && ev.source === 'backend') {
@@ -659,6 +624,9 @@ function buildSyntheticEvents(rawEvents, flowType) {
         ],
       });
     }
+
+    // ── Authentication complete: JWT payload visible in response (demo mode) ──
+    // Keep JWT payload attached to the http.response event to avoid duplicate JWT boxes.
   });
 
   return synthetic;
@@ -714,6 +682,9 @@ function mergeAndSortEvents(rawEvents, syntheticEvents) {
   // Remove duplicate backend internal events that mirror frontend start events
   const seenStepSources = new Set();
   const filtered = combined.filter((ev) => {
+    if (String(ev?.step || '').toLowerCase() === 'authentication.jwt.issued') {
+      return false;
+    }
     const key = `${ev.source}-${ev.direction}-${ev.step}`;
     if (
       ev.source === 'backend' &&
@@ -729,15 +700,47 @@ function mergeAndSortEvents(rawEvents, syntheticEvents) {
     return true;
   });
 
+  // Collapse captured db.query/db.result pairs into one visual event to reduce noise.
+  const collapsedDb = [];
+  for (let i = 0; i < filtered.length; i += 1) {
+    const current = filtered[i];
+    const next = filtered[i + 1];
+    const currentStep = String(current?.step || '').toLowerCase();
+    const nextStep = String(next?.step || '').toLowerCase();
+
+    const currentDbSuffix = currentStep.startsWith('db.query.') ? currentStep.slice('db.query.'.length) : null;
+    const nextDbSuffix = nextStep.startsWith('db.result.') ? nextStep.slice('db.result.'.length) : null;
+
+    if (
+      currentDbSuffix &&
+      nextDbSuffix &&
+      currentDbSuffix === nextDbSuffix &&
+      current.source === 'backend' &&
+      next.source === 'backend'
+    ) {
+      collapsedDb.push({
+        ...current,
+        payloadRaw: {
+          ...(current.payloadRaw || {}),
+          dbResult: next.payloadRaw || {},
+        },
+      });
+      i += 1;
+      continue;
+    }
+
+    collapsedDb.push(current);
+  }
+
   // Mark frontend inbound events that are simply the client-side receipt of an already-captured backend http.response.
-  const backendHttpResponses = filtered
+  const backendHttpResponses = collapsedDb
     .filter((ev) => !ev._synthetic && ev.source === 'backend' && ev.direction === 'outbound' && ev.step === 'http.response' && ev.endpoint)
     .map((ev) => ({
       endpoint: ev.endpoint,
       ts: Date.parse(ev.timestamp || '') || 0,
     }));
 
-  return filtered.map((ev) => {
+  return collapsedDb.map((ev) => {
     if (ev._synthetic) return ev;
     if (!(ev.source === 'frontend' && ev.direction === 'inbound' && ev.endpoint)) return ev;
 
@@ -849,6 +852,33 @@ function actorIndex(actorName) {
 function buildPayloadPreviewLines(ev) {
   const p = ev.payloadRaw;
   if (!p || typeof p !== 'object') return [];
+
+  const step = String(ev.step || '').toLowerCase();
+  const endpoint = String(ev.endpoint || '').toLowerCase();
+
+  // Avoid repeating large JWT payloads in multiple adjacent timeline boxes.
+  if (step === 'http.response' && endpoint === '/webauthn/authenticate/complete' && (p.accessToken || p.refreshToken)) {
+    return [
+      `success: ${String(Boolean(p.success))}`,
+      'jwtPayload: see auth.jwt.issued',
+      `mode: ${p.insecureDemoMode ? 'insecure-demo' : 'secure-standard'}`,
+    ];
+  }
+
+  if (step === 'authentication.complete.response' && (p.accessToken || p.refreshToken)) {
+
+        if (step.startsWith('db.query.') && p.dbResult && typeof p.dbResult === 'object') {
+          const resultState = p.dbResult.ok === true ? 'ok' : p.dbResult.ok === false ? 'failed' : 'result';
+          const rowPart = typeof p.dbResult.rowCount === 'number' ? `rows:${p.dbResult.rowCount}` : '';
+          return [`op: ${p.operation || 'query'}`, `result: ${resultState}`, rowPart].filter(Boolean);
+        }
+    return [
+      `success: ${String(Boolean(p.success))}`,
+      `jwtMode: ${p.jwtMode || (p.insecureDemoMode ? 'insecure-demo' : 'secure-standard')}`,
+      'jwtPayload: see auth.jwt.issued',
+    ];
+  }
+
   const lines = [];
   const keys = Object.keys(p);
   const trimWithEllipsis = (input, maxChars) => {
@@ -1306,12 +1336,41 @@ function generateAnnotations(ev) {
     });
   }
 
+  if (step === 'authentication.jwt.issued') {
+    annotations.push({
+      type: 'warning',
+      label: 'Insecure demo token exposure',
+      detail: 'This event contains real JWT values for teaching/debugging. In production, tokens should never be exposed in trace payloads.',
+    });
+    annotations.push({
+      type: 'info',
+      label: 'Cookies configured for demo',
+      detail: 'Cookie flags may be relaxed in this mode (for example sameSite=false) to make the full flow visible in local testing.',
+    });
+  }
+
   if (step.startsWith('db.query.')) {
     annotations.push({
       type: 'info',
       label: 'Database query started',
       detail: 'The backend is asking MySQL for data or updating a row. This is the request side of the database round trip.',
     });
+        if (p.dbResult && typeof p.dbResult === 'object') {
+          if (p.dbResult.ok === true) {
+            annotations.push({
+              type: 'success',
+              label: 'Database responded successfully',
+              detail: `The paired DB response for this query returned successfully.${typeof p.dbResult.rowCount === 'number' ? ` Rows matched: ${p.dbResult.rowCount}.` : ''}`,
+            });
+          }
+          if (Object.prototype.hasOwnProperty.call(p.dbResult, 'error') && p.dbResult.error === null) {
+            annotations.push({
+              type: 'info',
+              label: 'No database error',
+              detail: 'The DB response includes error=null, which means no SQL/connection error occurred.',
+            });
+          }
+        }
   }
 
   if (step.startsWith('db.result.')) {
@@ -1416,6 +1475,23 @@ function fieldDescription(key, value) {
       ? 'No database error occurred. null here is good and means the SQL operation succeeded.'
       : `Database error text. Non-null values indicate a SQL/connection issue: ${value}`,
     operation: `Database action type: "${value}". Common values: select (read), insert (create), update (modify).`,
+      dbResult: 'Paired database response payload for this query. Includes success (ok), rowCount, and error details.',
+    accessToken: 'JWT access token. In this demo it is intentionally visible in the payload for inspection. In production this should remain hidden and only stored in secure, httpOnly cookies.',
+    refreshToken: 'JWT refresh token. In this demo it is intentionally visible for learning. In production it should be protected and never exposed in trace payloads.',
+    jwtMode: value === 'insecure-demo'
+      ? 'This response was requested in insecure demo mode, so JWT payload values are intentionally visible.'
+      : 'This response used secure-standard mode, so JWT payload values should not be exposed in logs.',
+    cookieOptions: 'Cookie security settings applied when issuing JWT cookies (httpOnly, secure, sameSite, path).',
+    insecureDemoMode: value
+      ? 'true means the app is intentionally running in insecure demo mode for visibility/testing.'
+      : 'false means normal safer defaults are expected.',
+    sameSite: `Cookie sameSite option is "${value}". false disables same-site protection; this is insecure and should only be used for demos.`,
+    secure: value
+      ? 'true means the cookie is sent only over HTTPS.'
+      : 'false means cookie can be sent over HTTP; insecure and demo-only.',
+    httpOnly: value
+      ? 'true means JavaScript cannot read this cookie directly (safer default).'
+      : 'false means JavaScript can read this cookie; this is less secure.',
     success: value ? 'Server confirmed success.' : 'Server returned failure.',
     email: `Account identifier used to look up registered passkeys. Value: "${value}"`,
     hasResponse: value ? 'Browser returned a credential object — user completed the gesture.' : 'No credential returned — cancelled or no passkey found.',
@@ -1626,6 +1702,19 @@ const FlowSequenceDiagram = () => {
             Load
           </button>
         </div>
+      </div>
+
+      <div style={{
+        margin: '10px 20px 0',
+        border: `1px solid ${T.orange}`,
+        background: T.orangeDim,
+        color: '#7a3a00',
+        borderRadius: 8,
+        padding: '8px 12px',
+        fontSize: 12,
+        lineHeight: 1.5,
+      }}>
+        Insecure demo disclosure: this diagram may include real JWT values and relaxed cookie flags for educational visibility. Do not use this payload mode in production.
       </div>
 
       {error && (

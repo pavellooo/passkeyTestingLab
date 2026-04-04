@@ -29,7 +29,6 @@ We explicitly do not expose authenticator private keys or hardware-protected sec
 
 
 ## Current Gaps To Address
-- JWT information view
 - Better description of the payload breakdown
 
 
@@ -96,13 +95,13 @@ Definition of done:
 - Decoded panel is hidden when events only contain identity input or no WebAuthn fields.
 
 ### Phase 4: Sequence Diagram Visualization (Updated)
-Goal: visually represent the flow of payloads between Browser, Frontend, and Backend as a sequence diagram.
+Goal: visually represent the flow of payloads across Secure Storage, Browser, Backend, and Database as a sequence diagram.
 
 Tasks:
 - Create a new route (e.g., `/flow-diagram` or similar) to display the diagram.
 - Diagram page now works by uploading a JSON trace file (exported from the inspector or backend).
 - Diagram shows:
-  - Each step as a message between Browser, Frontend, and Backend lanes
+  - Each step as a message between Secure Storage, Browser, Backend, and Database lanes
   - Payloads (or summaries) as part of the diagram
   - Registration and authentication flows
 - Use a diagramming library (e.g., Mermaid.js or similar) for rendering.
@@ -123,6 +122,11 @@ Tasks:
 
 Definition of done:
 - A user can click on a JWT and see its decoded details in the UI.
+
+Status update (2026-04-03):
+- Implemented on the passkey login page with an explicit Show JWT Details / Hide JWT Details toggle.
+- JWT examples and insecure demo mode controls are grouped inside the toggle section.
+- JWT mode is propagated to backend requests via `x-insecure-demo-mode` header.
 
 
 ## Data Safety Rules
@@ -173,7 +177,7 @@ Use this shape for both backend and frontend events.
 - [x] Phase 2 - complete ✅ Implemented 2026-03-23
 - [x] Phase 3 - complete ✅ Implemented 2026-03-23
 - [x] Phase 4 - complete ✅ Implemented 2026-03-27
-- [ ] Phase 5 - incomplete
+- [x] Phase 5 - complete ✅ Implemented 2026-04-03 (login page JWT details toggle + demo mode visibility)
 
 ## Session Log Template
 Use this section to keep continuity between chats.
