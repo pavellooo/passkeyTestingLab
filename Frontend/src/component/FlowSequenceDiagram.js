@@ -998,6 +998,20 @@ function computeRowOffsets(events) {
 function SequenceDiagram({ events, selectedIdx, onSelect }) {
   if (!events || events.length === 0) return null;
 
+  // Show only one arrow for JWT issuance/response: prefer authentication.jwt.issued over http.response for /webauthn/authenticate/complete
+  const hasJwtIssued = events.some(ev => ev.step === 'authentication.jwt.issued');
+  const filteredEvents = events.filter(ev => {
+    // If both exist, hide http.response for /webauthn/authenticate/complete
+    if (
+      hasJwtIssued &&
+      ev.step === 'http.response' &&
+      ev.endpoint === '/webauthn/authenticate/complete'
+    ) {
+      return false;
+    }
+    return true;
+  });
+
   const totalWidth = ACTORS.length * (ACTOR_W + LANE_PAD) + LANE_PAD;
   const actorPositions = ACTORS.map((_, i) => actorX(i));
   const { offsets, totalH } = computeRowOffsets(events);
@@ -1684,29 +1698,30 @@ const FlowSequenceDiagram = () => {
         padding: '14px 28px',
         display: 'flex',
         alignItems: 'center',
-        gap: 20,
+        gap: 28,
         flexWrap: 'wrap',
         boxShadow: '0 1px 3px rgba(0,0,0,0.07)',
+        position: 'relative',
+        zIndex: 200,
       }}>
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.5px', color: T.text }}>
-            🔑 Passkey Flow Visualizer
-          </div>
-          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
-            WebAuthn ceremony sequence diagram
-            {flowType && <span style={{ marginLeft: 8, color: T.accent }}>· {flowType}</span>}
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
+        {/* File controls left-aligned */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
           <label style={{
             display: 'flex', alignItems: 'center', gap: 8,
             background: T.surfaceAlt, border: `1px solid ${T.border}`,
             borderRadius: 6, padding: '7px 12px', cursor: 'pointer',
             fontSize: 13, color: T.textMuted,
+            maxWidth: 220, minWidth: 0, overflow: 'hidden',
           }}>
             <span>📂</span>
-            <span>{selectedFile ? selectedFile.name : 'Choose JSON export'}</span>
+            <span style={{
+              maxWidth: 120,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              display: 'inline-block',
+              verticalAlign: 'bottom',
+            }}>{selectedFile ? selectedFile.name : 'Choose JSON export'}</span>
             <input type="file" accept="application/json" onChange={handleFileChange} style={{ display: 'none' }} />
           </label>
           <button
@@ -1720,8 +1735,19 @@ const FlowSequenceDiagram = () => {
             Load
           </button>
         </div>
+        {/* Title and flow type center-aligned */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.5px', color: T.text }}>
+            🔑 Passkey Flow Visualizer
+          </div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>
+            WebAuthn ceremony sequence diagram
+            {flowType && <span style={{ marginLeft: 8, color: T.accent }}>· {flowType}</span>}
+          </div>
+        </div>
       </div>
 
+      {/* Disclosure bar below header */}
       <div style={{
         margin: '10px 20px 0',
         border: `1px solid ${T.orange}`,
@@ -1731,6 +1757,8 @@ const FlowSequenceDiagram = () => {
         padding: '8px 12px',
         fontSize: 12,
         lineHeight: 1.5,
+        maxWidth: 700,
+        alignSelf: 'flex-start',
       }}>
         Insecure demo disclosure: this diagram may include real JWT values and relaxed cookie flags for educational visibility. Do not use this payload mode in production.
       </div>
@@ -1750,7 +1778,13 @@ const FlowSequenceDiagram = () => {
       )}
 
       {events.length > 0 && (
-        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', gap: 0 }}>
+        <div style={{
+          display: 'flex',
+          flex: 1,
+          overflow: 'hidden',
+          gap: 0,
+          marginRight: 'min(30vw, 370px)',
+        }}>
           {/* Diagram panel */}
           <div style={{
             flex: 2,
@@ -1771,16 +1805,44 @@ const FlowSequenceDiagram = () => {
 
           {/* Detail panel */}
           <div style={{
-            width: 420,
-            minWidth: 340,
+            width: '28vw',
+            maxWidth: 360,
+            minWidth: 240,
             flexShrink: 0,
             overflowY: 'auto',
             background: T.surface,
             borderLeft: `1px solid ${T.border}`,
-            padding: '20px 20px 40px',
+            padding: '20px 0px 50px 20px', // Remove right padding
+            position: 'fixed',
+            right: 0,
+            top: 80,
+            height: 'calc(100vh - 96px)',
+            zIndex: 100,
+            boxShadow: '0 0 16px 0 rgba(0,0,0,0.04)',
+            borderRadius: 16,
+            display: 'flex',
+            flexDirection: 'column',
           }}>
             {selectedEvent ? (
               <>
+                {/* DB Preview: Show SQL query and result if present */}
+                {selectedEvent.type === 'db' && (selectedEvent.query || selectedEvent.result) && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>Database Preview</div>
+                    {selectedEvent.query && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 12, color: T.purple, fontWeight: 700 }}>SQL Query</div>
+                        <pre style={{ background: '#f3e8ff', color: '#6b21a8', fontSize: 12, padding: '8px', borderRadius: 6, border: `1px solid ${T.purpleDim}`, margin: 0 }}>{selectedEvent.query}</pre>
+                      </div>
+                    )}
+                    {selectedEvent.result && (
+                      <div>
+                        <div style={{ fontSize: 12, color: T.green, fontWeight: 700, marginTop: 6 }}>Result</div>
+                        <pre style={{ background: '#dcfce7', color: '#1a7f37', fontSize: 12, padding: '8px', borderRadius: 6, border: `1px solid ${T.greenDim}`, margin: 0 }}>{JSON.stringify(selectedEvent.result, null, 2)}</pre>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {/* Step badge */}
                 <div style={{
                   background: T.surfaceAlt,

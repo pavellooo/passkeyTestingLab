@@ -128,6 +128,7 @@ const recordTraceEvent = (traceId, event) => {
     const trace = flowTraceStore.get(traceId);
     trace.events.push({
         timestamp: new Date().toISOString(),
+        type: event.type || 'internal',
         ...event
     });
 
@@ -141,6 +142,9 @@ const recordDbTraceEvent = (traceId, phase, step, payloadRaw) => {
         source: 'backend',
         direction: 'internal',
         step: `db.${phase}.${step}`,
+        type: 'db',
+        ...(payloadRaw && payloadRaw.query ? { query: payloadRaw.query } : {}),
+        ...(payloadRaw && payloadRaw.result ? { result: payloadRaw.result } : {}),
         payloadRaw: sanitizeForTrace(payloadRaw)
     });
 };
@@ -197,10 +201,13 @@ app.use('/webauthn', (req, res, next) => {
         });
     };
 
-    res.json = (body) => {
-        captureResponse(body);
-        return originalJson(body);
-    };
+        // Removed the separate 'authentication.jwt.issued' trace event.
+        // Instead, include JWT and cookie info in the final http.response payload for /webauthn/authenticate/complete.
+        res.json = (body) => {
+            // No longer add _jwtTraceInfo; JWT/cookie info is included directly in the payload if needed.
+            captureResponse(body);
+            return originalJson(body);
+        };
 
     res.send = (body) => {
         captureResponse(body);
@@ -672,6 +679,7 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
         direction: 'internal',
         step: 'authentication.complete.received',
         endpoint: '/webauthn/authenticate/complete',
+        type: 'internal',
         payloadRaw: sanitizeForTrace({ email, hasAssertion: Boolean(assertion) })
     });
 
@@ -683,14 +691,16 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
     const getUserDataQuery = `SELECT challenge, public_key, credential_id, counter FROM users WHERE email = ?`;
     recordDbTraceEvent(req.traceId, 'query', 'users.getAuthMaterial', {
         email,
-        operation: 'select'
+        operation: 'select',
+        query: getUserDataQuery
     });
     
     con.query(getUserDataQuery, [email], async (err, results) => {
         recordDbTraceEvent(req.traceId, 'result', 'users.getAuthMaterial', {
             ok: !err,
             rowCount: Array.isArray(results) ? results.length : 0,
-            error: err ? err.message : null
+            error: err ? err.message : null,
+            result: results
         });
 
         if (err) {
@@ -783,6 +793,7 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
                 direction: 'internal',
                 step: 'authentication.verify.result',
                 endpoint: '/webauthn/authenticate/complete',
+                type: 'internal',
                 payloadRaw: sanitizeForTrace({
                     verified: verification.verified,
                     storedCounter: normalizedStoredCounter,
@@ -809,14 +820,16 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
             recordDbTraceEvent(req.traceId, 'query', 'users.updateCounterAndClearChallenge', {
                 email,
                 nextCounter,
-                operation: 'update'
+                operation: 'update',
+                query: updateUserQuery
             });
             con.query(updateUserQuery, [nextCounter, email], (updateErr) => {
                 recordDbTraceEvent(req.traceId, 'result', 'users.updateCounterAndClearChallenge', {
                     ok: !updateErr,
                     email,
                     nextCounter,
-                    error: updateErr ? updateErr.message : null
+                    error: updateErr ? updateErr.message : null,
+                    result: updateErr ? null : { nextCounter, email }
                 });
 
                 if (updateErr) {
@@ -825,30 +838,12 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
                 }
                 
                 console.log('User data updated with counter:', nextCounter);
-                
+
+                // Define insecureDemoMode here so it's available for cookies and response
+                const insecureDemoMode = isInsecureDemoRequest(req);
                 const accessToken = generateAccessToken(email, results[0].user_id);
                 const refreshToken = generateRefreshToken(email, results[0].user_id);
 
-                const insecureDemoMode = isInsecureDemoRequest(req);
-
-                recordTraceEvent(req.traceId, {
-                    source: 'backend',
-                    direction: 'outbound',
-                    step: 'authentication.jwt.issued',
-                    endpoint: '/webauthn/authenticate/complete',
-                    payloadRaw: sanitizeForTrace({
-                        accessToken: insecureDemoMode ? accessToken : '[MASKED_IN_SECURE_MODE]',
-                        refreshToken: insecureDemoMode ? refreshToken : '[MASKED_IN_SECURE_MODE]',
-                        cookieOptions: {
-                            httpOnly: true,
-                            secure: insecureDemoMode ? false : true,
-                            sameSite: insecureDemoMode ? false : 'Strict',
-                            path: '/'
-                        },
-                        insecureDemoMode
-                    })
-                });
-                
                 res.cookie('accessToken', accessToken, {
                     httpOnly: true,
                     secure: insecureDemoMode ? false : true,
