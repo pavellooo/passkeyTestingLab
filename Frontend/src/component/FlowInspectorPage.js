@@ -707,7 +707,7 @@ function FlowInspectorPage() {
 
       <div style={{ border: '1px solid #e0e0e0', borderRadius: '10px', padding: '12px', background: '#fff', marginBottom: '12px' }}>
         <label htmlFor="trace-filter" style={{ display: 'block', fontWeight: 600, marginBottom: '6px' }}>
-          Filter by email, phone, or trace ID
+          Filter by email or trace ID
         </label>
         <input
           id="trace-filter"

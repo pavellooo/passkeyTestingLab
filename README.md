@@ -57,7 +57,7 @@ For details on the planning and current status of the project, see [PASSKEY_FLOW
 
 ## Deployment Status
 
-Should function both in local development and via this URL. Hosted on Heroku with a JawsDB MYSQL database
+Should function both in local development and via this URL. Hosted on Heroku with a JawsDB MYSQL database. I tend to keep it disabled when not in use to save on hosting costs, but feel free to message me if you want to try it out and I can enable it for you.
 https://passkey-testing-lab-ecc52e0ca9c4.herokuapp.com/
 
 ## Project Overview

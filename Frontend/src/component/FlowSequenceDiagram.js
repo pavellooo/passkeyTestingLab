@@ -619,14 +619,87 @@ function buildSyntheticEvents(rawEvents, flowType) {
           {
             type: 'success',
             label: 'DB write complete',
-            detail: 'Counter and challenge persisted. Server now issues JWT access + refresh cookies and returns { success: true }.',
+            detail: 'Counter and challenge persisted. Server now generates JWT tokens.',
           },
+        ],
+      });
+
+      // ── Authentication complete: JWT generation and issuance (always happens) ────
+      synthetic.push({
+        _synthetic: true,
+        _id: `syn-jwt-issued-${ev.uiId}`,
+        timestamp: ev.timestamp,
+        source: 'backend',
+        direction: 'outbound',
+        step: 'authentication.jwt.issued',
+        endpoint: '/webauthn/authenticate/complete',
+        from: 'Backend',
+        to: 'Browser',
+        label: 'Issue JWT tokens',
+        sublabel: 'accessToken (15m) + refreshToken (24h) · httpOnly Secure SameSite cookies',
+        arrowStyle: 'http',
+        payloadRaw: {
+          jwtMode: p.jwtMode || 'standard',
+          tokens: {
+            accessToken: {
+              type: 'JWT (RS256)',
+              expiresIn: '15 minutes',
+              claims: ['email', 'userId'],
+              storage: 'httpOnly cookie'
+            },
+            refreshToken: {
+              type: 'JWT (RS256)',
+              expiresIn: '24 hours',
+              claims: ['email', 'userId'],
+              storage: 'httpOnly cookie'
+            }
+          },
+          cookieAttributes: {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'Strict',
+            path: '/',
+            maxAge: '15m (access) / 24h (refresh)'
+          },
+          demoModeIncludesBody: p.insecureDemoMode === true
+        },
+        summaryAnnotations: [
+          {
+            type: 'success',
+            label: 'Tokens issued',
+            detail: 'Server generated access token (15m) and refresh token (24h) using RS256 algorithm with private key.'
+          },
+          {
+            type: 'info',
+            label: 'XSS Protection: httpOnly Cookies',
+            detail: 'Tokens stored in httpOnly cookies. JavaScript on this page CANNOT read them via document.cookie or JS APIs — this prevents token theft if malicious code is injected (XSS). Only the browser\'s HTTP layer sends cookies automatically with requests.'
+          },
+          {
+            type: 'info',
+            label: 'CSRF Protection: SameSite=Strict',
+            detail: 'SameSite=Strict prevents cross-site requests from sending cookies. Even if an attacker tricks you into visiting their site, the browser will not send your authentication cookies to their requests.'
+          },
+          {
+            type: 'info',
+            label: 'Transport Security: Secure flag',
+            detail: 'Secure flag means the cookie is only sent over HTTPS, never HTTP. Prevents interception by network attackers.'
+          },
+          {
+            type: p.insecureDemoMode ? 'warning' : 'success',
+            label: p.insecureDemoMode ? 'Demo Mode: Tokens also in response body' : 'Production Mode: Secure-only',
+            detail: p.insecureDemoMode
+              ? 'For testing visibility, tokens are ALSO included in JSON response body. In production, this would be disabled — only the httpOnly cookies would carry authentication.'
+              : 'Tokens are only in httpOnly cookies. Browser has no access to them, preventing XSS token theft.'
+          }
         ],
       });
     }
 
-    // ── Authentication complete: JWT payload visible in response (demo mode) ──
-    // Keep JWT payload attached to the http.response event to avoid duplicate JWT boxes.
+    // ── Authentication complete: HTTP response ──────────────────────────────────
+    if (!hasCapturedJwtIssued && step === 'authentication.complete.received' && ev.source === 'backend') {
+      // Capture the http.response that will have { success: true } (and optionally tokens in demo mode)
+      // This pairs with the JWT issued synthetic event above.
+    }
   });
 
   return synthetic;
@@ -642,8 +715,9 @@ function mergeAndSortEvents(rawEvents, syntheticEvents) {
     if (step.startsWith('db.query.')) return 3;
     if (step.startsWith('db.result.')) return 4;
     if (step.endsWith('.verify.result')) return 5;
-    if (step === 'http.response') return 6;
-    return 7;
+    if (step === 'authentication.jwt.issued') return 6;
+    if (step === 'http.response') return 7;
+    return 8;
   };
   // Build a map: after which raw event should each synthetic appear?
   // Strategy: synthetic events are keyed to the raw event they follow.
@@ -682,9 +756,6 @@ function mergeAndSortEvents(rawEvents, syntheticEvents) {
   // Remove duplicate backend internal events that mirror frontend start events
   const seenStepSources = new Set();
   const filtered = combined.filter((ev) => {
-    if (String(ev?.step || '').toLowerCase() === 'authentication.jwt.issued') {
-      return false;
-    }
     const key = `${ev.source}-${ev.direction}-${ev.step}`;
     if (
       ev.source === 'backend' &&

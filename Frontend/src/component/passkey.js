@@ -675,7 +675,7 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
           width: '100%',
           maxWidth: '950px',
           textAlign: 'left',
-          border: '1px solid #f0ad4e',
+          border: '1px solid #e2ba83',
           background: '#fff8e1',
           color: '#7a4b00',
           borderRadius: '6px',
@@ -683,7 +683,11 @@ function Passkey( { setIsAuthenticated, setUserEmail } ) { //accepting setIsAuth
           fontSize: '13px',
           lineHeight: 1.4,
         }}>
-          Insecure demo mode disclaimer: real JWT values can be included in flow payloads and cookie flags may be relaxed (for example sameSite=false, secure=false) for visibility. This is intentionally insecure and must not be used in production.
+          <div><strong>Insecure Demo Mode Breakdown</strong></div>
+          <div><strong>httpOnly:</strong> Prevents page JavaScript from reading cookie values. It is set to true for auth cookies in this app.</div>
+          <div><strong>secure:</strong> Restricts cookies to HTTPS transport. It is false in demo mode so local HTTP login works without cert setup.</div>
+          <div><strong>sameSite:</strong> Controls cross-site cookie sending behavior. It is false in demo mode so cookies can be viewed on a separate URL origin.</div>
+          <div><strong>Payload visibility:</strong> Demo mode returns JWTs in JSON response body for inspection, while secure mode does not directly expose them.</div>
         </div>
       )}
 
