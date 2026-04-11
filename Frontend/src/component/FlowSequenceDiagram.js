@@ -1,8 +1,11 @@
+// ─── Actors ────────────────────────────────────────────────────────────────────
+const ACTORS = ['SecureStorage', 'Browser', 'Backend', 'Database'];
 // FlowSequenceDiagram.js — Passkey Flow Visualizer (complete rewrite)
 // Renders a fully interactive SVG sequence diagram from passkey flow JSON exports.
 // Every arrow is click-selectable; the right panel shows rich contextual detail.
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { decodeJwtWithDescriptions } from './jwtUtils';
 
 // ─── Palette & tokens (light theme) ───────────────────────────────────────────
 const T = {
@@ -26,29 +29,20 @@ const T = {
   purpleDim: '#f3e8ff',
   orange:    '#bc4c00',
   orangeDim: '#fff1e5',
-
-  // Lane colors (light tints per actor)
   laneSecure:  '#eff6ff',
   laneBrowser: '#f0fdf4',
   laneBackend: '#fffbeb',
   laneDb:      '#faf5ff',
-
-  // Actor header colors
   actorSecure:  '#bfdbfe',
   actorBrowser: '#bbf7d0',
   actorBackend: '#fde68a',
   actorDb:      '#e9d5ff',
-
-  // Arrow colors by category
   arrowHttp:    '#0969da',
   arrowWebAuthn:'#1a7f37',
   arrowDb:      '#8250df',
   arrowInternal:'#57606a',
   arrowCrypto:  '#bc4c00',
 };
-
-// ─── Actors ────────────────────────────────────────────────────────────────────
-const ACTORS = ['SecureStorage', 'Browser', 'Backend', 'Database'];
 
 const ACTOR_META = {
   SecureStorage: {
@@ -1471,24 +1465,26 @@ function generateAnnotations(ev) {
 }
 
 function fieldDescription(key, value) {
-  // Improved SQL field descriptions for DB result events
+  // Improved SQL field descriptions for DB result events and JWT/other fields
   const sqlFieldDescriptions = {
-    challenge: 'The challenge value stored or retrieved from the users table for verification.',
-    public_key: 'The public key associated with the credential, used to verify signatures.',
-    credential_id: 'The unique identifier for the credential (passkey) in the database.',
-    counter: 'The signature counter for this credential. Used to detect cloned credentials.',
-    rowCount: 'Number of rows returned or affected by this SQL operation.',
+    challenge: 'The challenge value stored or retrieved from the users table for verification. This is a random value used to prevent replay attacks and ensure each authentication or registration is unique.',
+    public_key: 'The public key associated with the credential, used to verify signatures. Only the public part is stored; the private key never leaves the secure device.',
+    credential_id: 'The unique identifier for the credential (passkey) in the database. This is not secret and is used to look up the correct key for a user.',
+    counter: 'The signature counter for this credential. It increases with each authentication and helps detect if a credential has been cloned to another device.',
+    rowCount: 'Number of rows returned or affected by this SQL operation. Indicates how many records were matched, inserted, or updated.',
     error: value === null
-      ? 'No error occurred in the SQL operation.'
-      : `SQL error: ${value}`,
+      ? 'No error occurred in the SQL operation. The query completed successfully.'
+      : `SQL error: ${value}. This means the database reported a problem with the query or data.'`,
     ok: value === true
-      ? 'The SQL operation completed successfully.'
-      : 'The SQL operation failed.',
-    sqlQuery: 'The SQL query string sent to the database.',
-    sqlParams: 'Parameters used in the SQL query (for prepared statements).',
-    summary: 'A short summary of the SQL operation performed.',
-    description: 'A human-readable description of what the SQL query does.',
-    sqlResult: 'The result set returned by the SQL query, shown as a table preview above.',
+      ? 'The SQL operation completed successfully. true means the database accepted the query and made the requested change.'
+      : 'The SQL operation failed. false means the query did not succeed.',
+    sqlQuery: 'The SQL query string sent to the database. This is the actual command (e.g., SELECT, INSERT, UPDATE) executed by the backend.',
+    sqlParams: Array.isArray(value)
+      ? `SQL parameters: [${value.map((v, i) => `param${i + 1}: "${v}"`).join(', ')}]. These are values safely substituted into the query to prevent SQL injection attacks. Each parameter corresponds to a placeholder in the SQL statement. For example, if the query is 'SELECT * FROM users WHERE email = ?', then param1 is the email being looked up. Using parameters instead of string concatenation is a best practice for security.`
+      : 'Parameters used in the SQL query (for prepared statements). These are values safely substituted into the query to prevent SQL injection attacks. Using parameters instead of string concatenation is a best practice for security.',
+    summary: 'A short summary of the SQL operation performed. This helps describe what the query is doing in plain language.',
+    description: 'A human-readable description of what the SQL query does. Useful for understanding the intent of the database operation.',
+    sqlResult: 'The result set returned by the SQL query, shown as a table preview above. This contains the actual data retrieved or affected by the operation.',
   };
   const desc = {
     challenge: 'A unique random nonce generated per ceremony. The authenticator signs it; the server verifies the signed value matches what it issued. Prevents replay attacks.',
@@ -1527,24 +1523,24 @@ function fieldDescription(key, value) {
       ? 'No database error occurred. null here is good and means the SQL operation succeeded.'
       : `Database error text. Non-null values indicate a SQL/connection issue: ${value}`,
     operation: `Database action type: "${value}". Common values: select (read), insert (create), update (modify).`,
-    accessToken: 'JWT access token. In this demo it is intentionally visible in the payload for inspection. In production this should remain hidden and only stored in secure, httpOnly cookies.',
-    refreshToken: 'JWT refresh token. In this demo it is intentionally visible for learning. In production it should be protected and never exposed in trace payloads.',
+    accessToken: 'JWT access token. This is a compact, URL-safe string that encodes user identity and permissions. It is Base64URL-encoded and cryptographically signed, so it can be safely sent over the network. In production, it is stored in secure, httpOnly cookies and never exposed to JavaScript. The decoded version is shown below for learning purposes.',
+    refreshToken: 'JWT refresh token. Like the access token, this is Base64URL-encoded and signed, but is used to obtain new access tokens when the old one expires. It should be kept secret and is only visible here for demonstration. The decoded version is shown below.',
     jwtMode: value === 'insecure-demo'
-      ? 'This response was requested in insecure demo mode, so JWT payload values are intentionally visible.'
-      : 'This response used secure-standard mode, so JWT payload values should not be exposed in logs.',
-    cookieOptions: 'Cookie security settings applied when issuing JWT cookies (httpOnly, secure, sameSite, path).',
+      ? 'This response was requested in insecure demo mode, so JWT payload values are intentionally visible for educational purposes. In a real deployment, JWTs are only accessible as httpOnly cookies and never shown in logs or responses.'
+      : 'This response used secure-standard mode, so JWT payload values should not be exposed in logs or responses. JWTs are only accessible to the backend and browser HTTP layer.',
+    cookieOptions: 'Cookie security settings applied when issuing JWT cookies. These options (httpOnly, secure, sameSite, path) control how and when the browser sends the cookie, and help protect against XSS and CSRF attacks.',
     insecureDemoMode: value
-      ? 'true means the app is intentionally running in insecure demo mode for visibility/testing.'
-      : 'false means normal safer defaults are expected.',
-    sameSite: `Cookie sameSite option is "${value}". false disables same-site protection; this is insecure and should only be used for demos.`,
+      ? 'true means the app is intentionally running in insecure demo mode for visibility and testing. This allows JWTs and other sensitive data to be shown in the UI for learning.'
+      : 'false means normal, safer defaults are expected. Sensitive data is not exposed in responses or logs.',
+    sameSite: `Cookie sameSite option is "${value}". This controls whether cookies are sent with cross-site requests. Setting this to false disables same-site protection, which is insecure and should only be used for demos.`,
     secure: value
-      ? 'true means the cookie is sent only over HTTPS.'
-      : 'false means cookie can be sent over HTTP; insecure and demo-only.',
+      ? 'true means the cookie is sent only over HTTPS. This ensures cookies are never sent over unencrypted connections.'
+      : 'false means cookie can be sent over HTTP; this is insecure and should only be used for demos.',
     httpOnly: value
-      ? 'true means JavaScript cannot read this cookie directly (safer default).'
-      : 'false means JavaScript can read this cookie; this is less secure.',
-    success: value ? 'Server confirmed success.' : 'Server returned failure.',
-    email: `Account identifier used to look up registered passkeys. Value: "${value}"`,
+      ? 'true means JavaScript cannot read this cookie directly. This is a safer default and helps prevent XSS attacks.'
+      : 'false means JavaScript can read this cookie; this is less secure and should be avoided in production.',
+    success: value ? 'Server confirmed success. The operation (such as authentication or registration) completed as expected.' : 'Server returned failure. The operation did not complete successfully.',
+    email: `Account identifier used to look up registered passkeys. This is usually the user\'s email address. Value: "${value}"`,
     hasResponse: value ? 'Browser returned a credential object — user completed the gesture.' : 'No credential returned — cancelled or no passkey found.',
     hasAssertion: value ? 'Signed assertion received by backend, ready to verify.' : 'No assertion received.',
     hasCredential: value ? 'Credential object received by backend for registration.' : 'No credential in request.',
@@ -2011,7 +2007,7 @@ const FlowSequenceDiagram = () => {
                     <div style={{ gridColumn: '1/-1' }}>
                       <div style={{ fontSize: 10, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Timestamp</div>
                       <div style={{ fontSize: 12, color: T.textMuted }}>
-                        {selectedEvent.timestamp ? new Date(selectedEvent.timestamp).toLocaleString() : '—'}
+                        {selectedEvent.timestamp ? `${new Date(selectedEvent.timestamp).toLocaleString(undefined, { timeZoneName: 'short' })}` : '—'}
                       </div>
                     </div>
                   </div>
@@ -2164,6 +2160,77 @@ const FlowSequenceDiagram = () => {
                     }}>
                       <PayloadTree payload={selectedEvent.payloadRaw} />
                     </div>
+                  </div>
+                )}
+
+                {/* Decoded JWT raw JSON and panels (Access/Refresh Token) */}
+                {selectedEvent.payloadRaw && (selectedEvent.payloadRaw.accessToken || selectedEvent.payloadRaw.refreshToken) && (
+                  <div style={{ marginTop: 24 }}>
+                    {/* Raw decoded JSON for each token */}
+                    {['accessToken', 'refreshToken'].map((tokenType) => {
+                      const token = selectedEvent.payloadRaw[tokenType];
+                      let decodedRaw = null;
+                      try {
+                        decodedRaw = token ? JSON.stringify(require('./jwtUtils').decodeJwtWithDescriptions(token).reduce((acc, cur) => { acc[cur.key] = cur.value; return acc; }, {}), null, 2) : null;
+                      } catch (e) { decodedRaw = null; }
+                      if (!token || !decodedRaw) return null;
+                      return (
+                        <div key={tokenType + '-raw'} style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 4 }}>
+                            {tokenType === 'accessToken' ? 'Access Token' : 'Refresh Token'} — Decoded Raw JSON
+                          </div>
+                          <pre style={{
+                            background: '#f6f8fa', color: '#1f2328', fontSize: 11,
+                            lineHeight: 1.6, padding: '12px', borderRadius: 6,
+                            overflowX: 'auto', border: `1px solid ${T.border}`,
+                            margin: 0,
+                          }}>{decodedRaw}</pre>
+                        </div>
+                      );
+                    })}
+                    {/* Decoded field panels */}
+                    {['accessToken', 'refreshToken'].map((tokenType) => {
+                      const token = selectedEvent.payloadRaw[tokenType];
+                      const decoded = decodeJwtWithDescriptions(token);
+                      if (!token || !decoded) return null;
+                      // Helper to render epoch + human time for JWT timestamp fields
+                      function renderJwtTimestampField(key, value) {
+                        if (typeof value !== 'number') return <span style={{ fontFamily: 'monospace', color: T.orange, fontSize: 12 }}>{String(value)}</span>;
+                        const date = new Date(value * 1000);
+                        return (
+                          <span style={{ fontFamily: 'monospace', color: T.orange, fontSize: 12 }}>
+                            {value} <span style={{ color: T.textMuted, fontSize: 12, marginLeft: 6 }} title="Local time">({date.toLocaleString(undefined, { timeZoneName: 'short' })})</span>
+                          </span>
+                        );
+                      }
+                      return (
+                        <div key={tokenType} style={{ marginBottom: 20 }}>
+                          <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>
+                            {tokenType === 'accessToken' ? 'Access Token' : 'Refresh Token'} Breakdown
+                          </div>
+                          <div style={{
+                            background: T.surfaceAlt, borderRadius: 6,
+                            padding: '12px', fontSize: 13,
+                            border: `1px solid ${T.border}`,
+                          }}>
+                            {decoded.map(({ key, value, description }) => (
+                              <div key={key} style={{ marginBottom: 10 }}>
+                                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                                  <span style={{ fontWeight: 700, color: T.purple, fontSize: 12 }}>{key}</span>
+                                  {['exp', 'iat', 'nbf'].includes(key)
+                                    ? renderJwtTimestampField(key, value)
+                                    : <span style={{ fontFamily: 'monospace', color: T.orange, fontSize: 12 }}>{String(value)}</span>
+                                  }
+                                </div>
+                                {description && (
+                                  <div style={{ color: '#92400e', fontSize: 12, marginTop: 2, lineHeight: 1.5, fontStyle: 'italic' }}>{description}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </>
