@@ -788,6 +788,12 @@ function FlowInspectorPage() {
                       </div>
                     ) : null}
                     <div style={{ fontWeight: 600, wordBreak: 'break-word' }}>{event.step || 'event'}</div>
+                    {/* Friendly annotation for DB events */}
+                    {event.type === 'db' && event.summary && (
+                      <div style={{ color: '#0a6', fontSize: '13px', marginTop: '2px', marginBottom: '2px', fontWeight: 500 }}>
+                        {event.summary}
+                      </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -800,9 +806,7 @@ function FlowInspectorPage() {
 
                 {isExpanded ? (
                   <div style={{ marginTop: '10px' }}>
-                    <div style={{ fontSize: '13px', color: '#555', marginBottom: '6px' }}>
-                      direction: {event.direction || 'n/a'} | endpoint: {event.endpoint || 'n/a'} | status: {event.status || event.statusCode || 'n/a'}
-                    </div>
+                    {/* ...existing code... */}
                     <button
                       type="button"
                       onClick={() => copyPayload(event.payloadRaw)}

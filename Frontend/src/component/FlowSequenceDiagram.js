@@ -1471,6 +1471,25 @@ function generateAnnotations(ev) {
 }
 
 function fieldDescription(key, value) {
+  // Improved SQL field descriptions for DB result events
+  const sqlFieldDescriptions = {
+    challenge: 'The challenge value stored or retrieved from the users table for verification.',
+    public_key: 'The public key associated with the credential, used to verify signatures.',
+    credential_id: 'The unique identifier for the credential (passkey) in the database.',
+    counter: 'The signature counter for this credential. Used to detect cloned credentials.',
+    rowCount: 'Number of rows returned or affected by this SQL operation.',
+    error: value === null
+      ? 'No error occurred in the SQL operation.'
+      : `SQL error: ${value}`,
+    ok: value === true
+      ? 'The SQL operation completed successfully.'
+      : 'The SQL operation failed.',
+    sqlQuery: 'The SQL query string sent to the database.',
+    sqlParams: 'Parameters used in the SQL query (for prepared statements).',
+    summary: 'A short summary of the SQL operation performed.',
+    description: 'A human-readable description of what the SQL query does.',
+    sqlResult: 'The result set returned by the SQL query, shown as a table preview above.',
+  };
   const desc = {
     challenge: 'A unique random nonce generated per ceremony. The authenticator signs it; the server verifies the signed value matches what it issued. Prevents replay attacks.',
     rp: 'Relying Party — the website this passkey is bound to. Contains id (domain) and name (display label).',
@@ -1536,6 +1555,8 @@ function fieldDescription(key, value) {
     assertion: 'Full signed response from authenticator: id + authenticatorData + clientDataJSON + signature + userHandle.',
     credential: 'Full credential object from authenticator: id + attestationObject + authenticatorData + clientDataJSON + publicKey.',
   };
+  // Prefer SQL field descriptions for DB result fields
+  if (sqlFieldDescriptions[key]) return sqlFieldDescriptions[key];
   return desc[key] || '';
 }
 
@@ -1682,6 +1703,161 @@ const FlowSequenceDiagram = () => {
     diagramContainerRef.current.scrollTop = Math.max(0, rowY - 120);
   }, [events, selectedIdx]);
 
+  // Helper: Render spreadsheet-style SQL table preview for db events, with sample/real data and highlight accessed columns
+  function renderSqlTablePreview(event) {
+    if (!event || event.type !== 'db' || !event.step || !event.step.startsWith('db.result.')) return null;
+    // Users table schema
+    const columns = [
+      'id', 'email', 'user_id', 'challenge', 'credential', 'public_key', 'credential_id', 'counter', 'created_at'
+    ];
+    let rows = [];
+    if (Array.isArray(event.sqlResult) && event.sqlResult.length > 0) {
+      rows = event.sqlResult;
+    } else if (event.sqlResult && typeof event.sqlResult === 'object' && Object.keys(event.sqlResult).length > 0) {
+      rows = [event.sqlResult];
+    } else {
+      // Try to reconstruct from payloadRaw, event, and previous events
+      const row = {};
+      columns.forEach(col => {
+        if (event.payloadRaw && event.payloadRaw[col] !== undefined) {
+          row[col] = event.payloadRaw[col];
+        } else if (event[col] !== undefined) {
+          row[col] = event[col];
+        }
+      });
+      // If still missing, try to fill from previous events in the timeline
+      if (Object.values(row).every(v => v === undefined || v === '')) {
+        const idx = events.findIndex(e => e === event);
+        for (let i = idx - 1; i >= 0; i--) {
+          const prev = events[i];
+          columns.forEach(col => {
+            if (!row[col] && prev && prev.payloadRaw && prev.payloadRaw[col] !== undefined) {
+              row[col] = prev.payloadRaw[col];
+            }
+          });
+        }
+      }
+      if (Object.values(row).some(v => v !== undefined && v !== '')) {
+        rows = [row];
+      }
+    }
+    if (!rows.length) return null;
+
+    // Determine which columns were accessed/affected
+    let accessedCols = new Set();
+    if (event.sqlQuery) {
+      // Naive SQL parse: look for column names in query string
+      columns.forEach(col => {
+        if (event.sqlQuery.toLowerCase().includes(col.toLowerCase())) accessedCols.add(col);
+      });
+    }
+    // Also highlight columns that have non-empty values in payloadRaw
+    if (event.payloadRaw) {
+      columns.forEach(col => {
+        if (event.payloadRaw[col] !== undefined && event.payloadRaw[col] !== null && event.payloadRaw[col] !== '') accessedCols.add(col);
+      });
+    }
+
+    return (
+      <div style={{ marginBottom: '12px' }}>
+        <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '4px' }}>SQL Table Preview (users)</div>
+        <div style={{ overflowX: 'auto', border: '1px solid #e0e0e0', borderRadius: '6px', background: '#fff' }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: '700px' }}>
+            <thead>
+              <tr>
+                {columns.map((col) => (
+                  <th key={col} style={{ background: '#f7f7f7', border: '1px solid #e0e0e0', padding: '6px', fontWeight: 700, fontSize: '12px' }}>{col}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIdx) => (
+                <tr key={rowIdx}>
+                  {columns.map((col) => {
+                    let bg = '';
+                    if (accessedCols.has(col)) {
+                      bg = '#e7f3ff'; // blue highlight for accessed
+                    }
+                    return (
+                      <td key={col} style={{ border: '1px solid #e0e0e0', padding: '6px', fontSize: '12px', background: bg }}>{row[col] !== undefined ? String(row[col]) : ''}</td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+
+  // Helper: Build SQL summary details based on type and fields
+  function buildSqlSummary(event) {
+    if (!event || event.type !== 'db') return null;
+    const p = event.payloadRaw || {};
+    const step = event.step || '';
+    const query = (event.sqlQuery || '').toLowerCase();
+    let title = '';
+    let detail = '';
+
+    if (step.startsWith('db.query.')) {
+      title = 'Database query started';
+      if (/select/.test(query)) {
+        detail = 'The backend is asking MySQL for data from the users table.';
+        if (/where email/.test(query) && p.sqlParams && p.sqlParams[0]) {
+          detail += ` Looking up user by email: "${p.sqlParams[0]}".`;
+        } else if (/where credential_id/.test(query) && p.sqlParams && p.sqlParams[0]) {
+          detail += ` Looking up by credential_id: "${p.sqlParams[0]}".`;
+        }
+      } else if (/insert/.test(query)) {
+        detail = 'The backend is inserting a new user or credential row.';
+      } else if (/update/.test(query)) {
+        detail = 'The backend is updating an existing user or credential row.';
+        if (/set challenge/.test(query)) detail += ' Challenge value is being updated.';
+        if (/set counter/.test(query)) detail += ' Counter value is being updated.';
+      } else if (/delete/.test(query)) {
+        detail = 'The backend is deleting a user or credential row.';
+      } else {
+        detail = 'The backend is sending a SQL command to MySQL.';
+      }
+      detail += ' This is the request side of the database round trip.';
+    } else if (step.startsWith('db.result.')) {
+      if (p.error) {
+        title = 'Database error';
+        detail = `MySQL returned an error: ${p.error}`;
+      } else {
+        title = 'Database response OK';
+        if (/select/.test(query)) {
+          detail = 'MySQL returned data for the query.';
+          if (p.rowCount !== undefined) detail += ` Rows returned: ${p.rowCount}.`;
+        } else if (/insert/.test(query)) {
+          detail = 'MySQL completed an insert operation.';
+          if (p.rowCount !== undefined) detail += ` Rows inserted: ${p.rowCount}.`;
+        } else if (/update/.test(query)) {
+          detail = 'MySQL completed an update operation.';
+          if (p.rowCount !== undefined) detail += ` Rows updated: ${p.rowCount}.`;
+        } else if (/delete/.test(query)) {
+          detail = 'MySQL completed a delete operation.';
+          if (p.rowCount !== undefined) detail += ` Rows deleted: ${p.rowCount}.`;
+        } else {
+          detail = 'MySQL completed the SQL operation.';
+        }
+      }
+    } else {
+      title = 'Database event';
+      detail = 'A database-related event occurred.';
+    }
+
+    return (
+      <>
+        <div style={{ fontWeight: 700, color: '#17509c', marginBottom: 2 }}>{title}</div>
+        <div>{detail}</div>
+      </>
+    );
+  }
+
+  // Layout: event detail panel flush to the top, right sidebar
   return (
     <div style={{
       minHeight: '100vh',
@@ -1747,22 +1923,6 @@ const FlowSequenceDiagram = () => {
         </div>
       </div>
 
-      {/* Disclosure bar below header */}
-      <div style={{
-        margin: '10px 20px 0',
-        border: `1px solid ${T.orange}`,
-        background: T.orangeDim,
-        color: '#7a3a00',
-        borderRadius: 8,
-        padding: '8px 12px',
-        fontSize: 12,
-        lineHeight: 1.5,
-        maxWidth: 700,
-        alignSelf: 'flex-start',
-      }}>
-        Insecure demo disclosure: this diagram may include real JWT values and relaxed cookie flags for educational visibility. Do not use this payload mode in production.
-      </div>
-
       {error && (
         <div style={{ background: T.redDim, border: `1px solid ${T.red}`, borderRadius: 6, padding: '10px 20px', margin: '12px 20px', color: T.red, fontSize: 13 }}>
           ⚠️ {error}
@@ -1780,18 +1940,20 @@ const FlowSequenceDiagram = () => {
       {events.length > 0 && (
         <div style={{
           display: 'flex',
-          flex: 1,
-          overflow: 'hidden',
+          width: '100vw',
+          height: '100vh',
           gap: 0,
-          marginRight: 'min(30vw, 370px)',
         }}>
           {/* Diagram panel */}
           <div style={{
-            flex: 2,
+            flexBasis: '60vw',
+            minWidth: 400,
+            maxWidth: '70vw',
             overflowY: 'auto',
             overflowX: 'auto',
             padding: '20px 16px',
             background: T.bg,
+            height: '100vh',
           }} ref={diagramContainerRef}>
             <Legend />
             <div style={{ minWidth: 700 }}>
@@ -1803,46 +1965,21 @@ const FlowSequenceDiagram = () => {
             </div>
           </div>
 
-          {/* Detail panel */}
+          {/* Detail panel flush to the top */}
           <div style={{
-            width: '28vw',
-            maxWidth: 360,
-            minWidth: 240,
-            flexShrink: 0,
-            overflowY: 'auto',
+            flex: 1,
+            minWidth: 320,
             background: T.surface,
             borderLeft: `1px solid ${T.border}`,
-            padding: '20px 0px 50px 20px', // Remove right padding
-            position: 'fixed',
-            right: 0,
-            top: 80,
-            height: 'calc(100vh - 96px)',
-            zIndex: 100,
+            padding: '20px 32px 32px 32px',
+            height: '100vh',
+            overflowY: 'auto',
             boxShadow: '0 0 16px 0 rgba(0,0,0,0.04)',
-            borderRadius: 16,
             display: 'flex',
             flexDirection: 'column',
           }}>
             {selectedEvent ? (
               <>
-                {/* DB Preview: Show SQL query and result if present */}
-                {selectedEvent.type === 'db' && (selectedEvent.query || selectedEvent.result) && (
-                  <div style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>Database Preview</div>
-                    {selectedEvent.query && (
-                      <div style={{ marginBottom: 8 }}>
-                        <div style={{ fontSize: 12, color: T.purple, fontWeight: 700 }}>SQL Query</div>
-                        <pre style={{ background: '#f3e8ff', color: '#6b21a8', fontSize: 12, padding: '8px', borderRadius: 6, border: `1px solid ${T.purpleDim}`, margin: 0 }}>{selectedEvent.query}</pre>
-                      </div>
-                    )}
-                    {selectedEvent.result && (
-                      <div>
-                        <div style={{ fontSize: 12, color: T.green, fontWeight: 700, marginTop: 6 }}>Result</div>
-                        <pre style={{ background: '#dcfce7', color: '#1a7f37', fontSize: 12, padding: '8px', borderRadius: 6, border: `1px solid ${T.greenDim}`, margin: 0 }}>{JSON.stringify(selectedEvent.result, null, 2)}</pre>
-                      </div>
-                    )}
-                  </div>
-                )}
                 {/* Step badge */}
                 <div style={{
                   background: T.surfaceAlt,
@@ -1905,11 +2042,82 @@ const FlowSequenceDiagram = () => {
                   >Next →</button>
                 </div>
 
-                {/* Annotations */}
+                {/* Annotations (Summary) */}
+
                 {annotations.length > 0 && (
                   <div style={{ marginBottom: 16 }}>
                     <div style={{ fontSize: 11, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: 8 }}>Summary</div>
                     {annotations.map((ann, i) => <AnnotationCard key={i} ann={ann} />)}
+                    {/* SQL summary for db.result events only, now always detailed and context-aware */}
+                    {selectedEvent.type === 'db' && selectedEvent.step && selectedEvent.step.startsWith('db.result.') && (
+                      <div style={{
+                        background: '#e7f3ff',
+                        color: '#17509c',
+                        fontSize: '13px',
+                        padding: '12px 16px',
+                        borderRadius: '8px',
+                        marginTop: '8px',
+                        marginBottom: '0',
+                        border: '1px solid #60a5fa',
+                        fontFamily: 'inherit',
+                        wordBreak: 'break-word',
+                        boxShadow: '0 1px 2px rgba(24, 80, 180, 0.04)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}>
+                        <span style={{ fontSize: 11, color: '#2563eb', fontWeight: 700, letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: 2 }}>SQL Summary</span>
+                        <span>
+                          {buildSqlSummary(selectedEvent)}
+                        </span>
+                      </div>
+                    )}
+                    {selectedEvent.type === 'db' && selectedEvent.step && selectedEvent.step.startsWith('db.result.') && selectedEvent.sqlQuery && (
+                      <div style={{ background: '#f6f8fa', color: '#1f2328', fontSize: '13px', padding: '8px', borderRadius: '6px', marginTop: '8px', marginBottom: '0', border: '1px solid #e0e0e0', fontFamily: 'monospace', overflowX: 'auto', whiteSpace: 'pre', maxWidth: '100%' }}>
+                        <b>SQL Query:</b>
+                        <div style={{ marginTop: 4 }}>{selectedEvent.sqlQuery}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+
+
+                {/* SQL Table Preview for DB result events only */}
+                {selectedEvent.type === 'db' && selectedEvent.step && selectedEvent.step.startsWith('db.result.') && renderSqlTablePreview(selectedEvent)}
+
+                {/* SQL Result as highlighted box, only for DB result events */}
+                {selectedEvent.type === 'db' && selectedEvent.step && selectedEvent.step.startsWith('db.result.') && (
+                  <div style={{
+                    marginBottom: '14px',
+                    width: '100%',
+                    minWidth: 0,
+                  }}>
+                    <div style={{
+                      fontSize: 11,
+                      color: '#2563eb',
+                      fontWeight: 600,
+                      letterSpacing: '0.5px',
+                      textTransform: 'uppercase',
+                      marginBottom: 4,
+                    }}>SQL Result</div>
+                    <pre style={{
+                      background: '#eaf3ff',
+                      color: '#1f2328',
+                      fontSize: 13,
+                      fontFamily: 'JetBrains Mono, IBM Plex Mono, Fira Code, monospace',
+                      padding: '12px',
+                      borderRadius: '6px',
+                      border: '1px solid #b6d4fe',
+                      margin: 0,
+                      overflowX: 'auto',
+                      width: '100%',
+                      minWidth: 0,
+                      boxSizing: 'border-box',
+                      lineHeight: 1.6,
+                    }}>
+                      {selectedEvent.sqlResult ? JSON.stringify(selectedEvent.sqlResult, null, 2) : 'No result'}
+                    </pre>
                   </div>
                 )}
 

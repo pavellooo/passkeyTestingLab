@@ -138,14 +138,26 @@ const recordTraceEvent = (traceId, event) => {
 };
 
 const recordDbTraceEvent = (traceId, phase, step, payloadRaw) => {
+    // Promote common fields to top-level for all db events
+    const promoted = {};
+    if (payloadRaw) {
+        if (payloadRaw.sqlQuery) promoted.sqlQuery = payloadRaw.sqlQuery;
+        if (payloadRaw.sqlParams) promoted.sqlParams = payloadRaw.sqlParams;
+        if (payloadRaw.sqlResult) promoted.sqlResult = payloadRaw.sqlResult;
+        if (payloadRaw.rowCount !== undefined) promoted.rowCount = payloadRaw.rowCount;
+        if (payloadRaw.error !== undefined) promoted.error = payloadRaw.error;
+    }
     recordTraceEvent(traceId, {
         source: 'backend',
         direction: 'internal',
         step: `db.${phase}.${step}`,
         type: 'db',
-        ...(payloadRaw && payloadRaw.query ? { query: payloadRaw.query } : {}),
-        ...(payloadRaw && payloadRaw.result ? { result: payloadRaw.result } : {}),
-        payloadRaw: sanitizeForTrace(payloadRaw)
+        ...promoted,
+        payloadRaw: sanitizeForTrace(
+            Object.fromEntries(
+                Object.entries(payloadRaw || {}).filter(([k]) => k !== 'summary' && k !== 'description')
+            )
+        )
     });
 };
 
@@ -364,12 +376,14 @@ app.post('/webauthn/register', authLimiter, (req, res) => {
     // Check if the user already exists
     const checkUserQuery = `SELECT * FROM users WHERE email = ?`;
     recordDbTraceEvent(req.traceId, 'query', 'users.lookupByEmail', {
-        email: validatedEmail,
-        operation: 'select'
+        sqlQuery: checkUserQuery,
+        sqlParams: [validatedEmail]
     });
     con.query(checkUserQuery, [validatedEmail], (err, results) => {
         recordDbTraceEvent(req.traceId, 'result', 'users.lookupByEmail', {
-            ok: !err,
+            summary: 'Result of user lookup',
+            description: `Result for: SELECT ... FROM users WHERE email = ?`,
+            sqlResult: results,
             rowCount: Array.isArray(results) ? results.length : 0,
             error: err ? err.message : null
         });
@@ -533,8 +547,8 @@ app.post('/webauthn/register/complete', (req, res) => {
                 `;
 
                 recordDbTraceEvent(traceId, 'query', 'users.insertCredential', {
-                    email,
-                    operation: 'insert'
+                    sqlQuery: insertUserQuery,
+                    sqlParams: [email, userId, '<credential>', '<public_key>', credentialIDBase64url, initialCounter]
                 });
                 
                 // Execute the SQL query to insert the user's complete information
@@ -545,9 +559,9 @@ app.post('/webauthn/register/complete', (req, res) => {
                     credentialPublicKeyBase64,
                     credentialIDBase64url, 
                     initialCounter
-                ], (dbError) => {
+                ], function(dbError, dbResult) {
                     recordDbTraceEvent(traceId, 'result', 'users.insertCredential', {
-                        ok: !dbError,
+                        sqlResult: dbResult,
                         credentialId: credentialIDBase64url,
                         error: dbError ? dbError.message : null
                     });
@@ -612,13 +626,12 @@ app.post('/webauthn/authenticate', authLimiter, (req, res) => {
     // Store challenge in database
     const updateChallengeQuery = `UPDATE users SET challenge = ? WHERE email = ?`;
     recordDbTraceEvent(req.traceId, 'query', 'users.updateChallenge', {
-        email: validatedEmail,
-        operation: 'update'
+        sqlQuery: updateChallengeQuery,
+        sqlParams: [challenge, validatedEmail]
     });
     con.query(updateChallengeQuery, [challenge, validatedEmail], (err) => {
         recordDbTraceEvent(req.traceId, 'result', 'users.updateChallenge', {
-            ok: !err,
-            email: validatedEmail,
+            sqlResult: { affectedRows: this ? this.affectedRows : undefined },
             error: err ? err.message : null
         });
 
@@ -630,12 +643,14 @@ app.post('/webauthn/authenticate', authLimiter, (req, res) => {
         // Retrieve the credential ID for this user
         const getCredentialQuery = `SELECT credential_id FROM users WHERE email = ?`;
         recordDbTraceEvent(req.traceId, 'query', 'users.getCredentialId', {
-            email: validatedEmail,
-            operation: 'select'
+            sqlQuery: getCredentialQuery,
+            sqlParams: [validatedEmail]
         });
         con.query(getCredentialQuery, [validatedEmail], (err, results) => {
             recordDbTraceEvent(req.traceId, 'result', 'users.getCredentialId', {
-                ok: !err,
+                summary: 'Result of credential ID fetch',
+                description: `Result for: SELECT credential_id FROM users WHERE email = ?`,
+                sqlResult: results,
                 rowCount: Array.isArray(results) ? results.length : 0,
                 error: err ? err.message : null
             });
@@ -690,17 +705,19 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
     // Get the user data needed for verification
     const getUserDataQuery = `SELECT challenge, public_key, credential_id, counter FROM users WHERE email = ?`;
     recordDbTraceEvent(req.traceId, 'query', 'users.getAuthMaterial', {
-        email,
-        operation: 'select',
-        query: getUserDataQuery
+        summary: 'Get authentication material for user',
+        description: `SELECT challenge, public_key, credential_id, counter FROM users WHERE email = ? with params [${email}]`,
+        sqlQuery: getUserDataQuery,
+        sqlParams: [email]
     });
     
     con.query(getUserDataQuery, [email], async (err, results) => {
         recordDbTraceEvent(req.traceId, 'result', 'users.getAuthMaterial', {
-            ok: !err,
+            summary: 'Result of authentication material fetch',
+            description: `Result for: SELECT challenge, public_key, credential_id, counter FROM users WHERE email = ?`,
+            sqlResult: results,
             rowCount: Array.isArray(results) ? results.length : 0,
-            error: err ? err.message : null,
-            result: results
+            error: err ? err.message : null
         });
 
         if (err) {
@@ -818,18 +835,17 @@ app.post('/webauthn/authenticate/complete', (req, res) => {
             // Update the counter and clear the challenge
             const updateUserQuery = `UPDATE users SET challenge = NULL, counter = ? WHERE email = ?`;
             recordDbTraceEvent(req.traceId, 'query', 'users.updateCounterAndClearChallenge', {
-                email,
-                nextCounter,
-                operation: 'update',
-                query: updateUserQuery
+                summary: 'Update counter and clear challenge',
+                description: `UPDATE users SET challenge = NULL, counter = ? WHERE email = ? with params [${nextCounter}, ${email}]`,
+                sqlQuery: updateUserQuery,
+                sqlParams: [nextCounter, email]
             });
             con.query(updateUserQuery, [nextCounter, email], (updateErr) => {
                 recordDbTraceEvent(req.traceId, 'result', 'users.updateCounterAndClearChallenge', {
-                    ok: !updateErr,
-                    email,
-                    nextCounter,
-                    error: updateErr ? updateErr.message : null,
-                    result: updateErr ? null : { nextCounter, email }
+                    summary: 'Result of counter update',
+                    description: `Result for: UPDATE users SET challenge = NULL, counter = ? WHERE email = ?`,
+                    sqlResult: updateErr ? null : { nextCounter, email },
+                    error: updateErr ? updateErr.message : null
                 });
 
                 if (updateErr) {
