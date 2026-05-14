@@ -166,9 +166,7 @@ app.set('trust proxy', 1);
 
 // CORS configuration
 app.use(cors({
-    origin: isProduction 
-        ? process.env.FRONTEND_URL || true
-        : ['http://localhost:3000', 'https://localhost:3000'],
+    origin: process.env.ORIGIN || (isProduction ? true : 'http://localhost:3000'),
     credentials: true
 })); // use credentials for cookies
 app.use(bodyParser.json());
@@ -343,13 +341,13 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Expected origin for WebAuthn verification
-const expectedOrigin = process.env.EXPECTED_ORIGIN || 
-    (isProduction 
+const expectedOrigin = process.env.ORIGIN ||
+    (isProduction
         ? process.env.HEROKU_APP_URL || `https://${process.env.HEROKU_APP_NAME}.herokuapp.com`
-        : 'https://localhost:5200');
+        : 'http://localhost:3000');
 
-const expectedRPID = process.env.EXPECTED_RP_ID || 
-    (isProduction 
+const expectedRPID = process.env.RP_ID ||
+    (isProduction
         ? process.env.HEROKU_APP_NAME || 'herokuapp.com'
         : 'localhost');
 
@@ -987,14 +985,12 @@ app.post('/logout', (req, res) => {
     res.json({ success: true, message: 'Logged out successfully' });
 });
 
-//add this for switching to production
-//const path = require('path');
-// Serve static files from the React app
-app.use(express.static(path.join(__dirname, '../Frontend/build')));
+// Serve static files from the built frontend
+app.use(express.static(path.join(__dirname, 'build')));
 
 // Catch-all handler for React Router
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../Frontend/build', 'index.html'));
+    res.sendFile(path.join(__dirname, 'build', 'index.html'));
 });
 
 // Server startup with environment-based HTTPS handling

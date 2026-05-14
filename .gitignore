@@ -33,8 +33,9 @@ yarn-error.log*
 .env
 private.key
 public.key
-Backend/.env
-Frontend/.env
+# The following lines should have their "!" removed going forward to remove .env files and secrets from version control.
+!Backend/.env
+!Frontend/.env
 Backend/certs/
 Frontend/build/
 Backend/build/

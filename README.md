@@ -87,22 +87,43 @@ This is a full-stack application with:
 
 ## Getting Started
 
-### Local Development
+### Two Local Run Modes
+
+You can test the app two ways on your machine:
+
+1. **Local development mode**: run the frontend and backend as separate local servers.
+   - Frontend: `npm --prefix Frontend start`
+   - Backend: `npm run start-backend`
+   - Use this when you want fast React hot reload. Changes to the frontend will be reflected immediately without needing to restart either server.
+   - However, backend changes will always require a backend restart to take effect.
+   - See the next section for detailed local development instructions.
+
+2. **Local production mode**: build the frontend and let the backend serve the static files.
+   - Build and copy the frontend into the backend: `npm run deploy`
+   - Start the backend: `npm run start-backend`
+   - Or do both together: `npm run start:deployed-local`
+   - Use this when you want to test the production serving path locally.
+   - See the "Build and Deployment" section for more details.
+
+
+### Local Development Mode
 
 1. **Install all dependencies (one-time setup)**:
    ```bash
    npm run setup
    ```
 
+   If any `node_modules` folders are missing, the setup step will reinstall them before you start the app.
+
 2. **Configure Frontend API URL** (one-time setup):
+   
+A `.env` file may have been committed to source control for convenience. If the Frontend/.env file is missing, follow this step to create it:
+
    Copy or create `Frontend/.env` from the example (.env.example):
    ```bash
    cp Frontend/.env.example Frontend/.env
    ```
-   Or manually create `Frontend/.env`:
-   ```bash
-   REACT_APP_API_BASE_URL=http://localhost:5200
-   ```
+
 
 3. **Run the frontend dev server** (in one terminal):
    ```bash
@@ -116,26 +137,35 @@ This is a full-stack application with:
    ```
    Backend will be available at `http://localhost:5200`
 
-5. **Open the standalone flow inspector** (optional but recommended):
-   - `http://localhost:3000/flow-inspector`
-   - Select or paste a trace ID to filter events for one flow.
+5. **Open the App**
+   - Go to `http://localhost:3000` in your browser to access the frontend.
+
+6. **Turn off the app**
+   - Stop both servers by pressing `Ctrl + C` in each terminal, or by closing the terminal windows.
 
 ### Local Configuration
 
-The local setup uses HTTP (not HTTPS) to avoid self-signed certificate issues. Key values in `Backend/.env` for local dev:
+The local setup uses HTTP (not HTTPS) to avoid self-signed certificate issues. Both local run modes use the same `Backend/.env` settings, with one key difference:
 
+**For local development mode** (separate frontend and backend servers):
 ```bash
 NODE_ENV=development
-EXPECTED_ORIGIN=http://localhost:3000
-EXPECTED_RP_ID=localhost
-DB_HOST=localhost
-DB_USER=root
-DB_PASSWORD=Hashtag@123
-DB_NAME=webauthn_passkey
+ORIGIN=http://localhost:3000
+RP_ID=localhost
+(DB connection settings...)
 PORT=5200
 ```
 
-Do not use the production Heroku values locally; the commented section in `Backend/.env` shows those for reference only.
+**For local deployed mode** (backend serves built frontend):
+```bash
+NODE_ENV=development
+ORIGIN=http://localhost:5200          # ← Only this line changes
+RP_ID=localhost
+(DB connection settings...)
+PORT=5200
+```
+
+The `.env` files are tracked in source control for convenience right now. Change the secrets and credentials before sharing the repo, and remove them from source control in the future once you are ready to harden the setup.
 
 ### Local Troubleshooting
 
@@ -156,50 +186,84 @@ PORT=5300
 
 ## Build and Deployment
 
-### Building for Production
+### Building for Production (Local Deployed Mode)
+
+Before starting the backend, ensure `Backend/.env` is configured for local testing:
+```bash
+NODE_ENV=development
+ORIGIN=http://localhost:5200
+RP_ID=localhost
+PORT=5200
+```
 
 To build the frontend and copy the built assets to `Backend/build`:
 ```bash
 npm run deploy
 ```
 
-To start the backend server (which serves the built frontend):
+Then start the backend server (which serves the built frontend):
 ```bash
 npm run start-backend
 ```
 
-To do both steps in one command:
+Or do both steps in one command:
 ```bash
 npm run start:deployed-local
 ```
+
+Then visit `http://localhost:5200` in your browser. The backend will serve the pre-built frontend files.
 
 ### Heroku Deployment
 
 This project is configured for easy deployment to Heroku using the provided `Procfile`.
 
-#### Deploy Steps:
+#### Setup Steps
 
-1. **Set up Heroku (first time only)**:
-   ```bash
-   heroku login
-   heroku create your-app-name
-   ```
+1. **Create Heroku App & Connect Git**:
+   - Go to [Heroku Dashboard](https://dashboard.heroku.com)
+   - Click "New" → "Create new app"
+   - Enter your app name (for example, `my-passkey-app`)
+   - In the Deploy tab, connect your GitHub repo and enable automatic deploys
 
-2. **Configure environment variables** (via command line or on Heroku dashboard):
-   ```bash
-   heroku config:set VARIABLE_NAME=value
-   ```
+2. **Add JawsDB MySQL Add-on**:
+   - In the Heroku Dashboard, go to the Resources tab
+   - Search for "JawsDB MySQL" in the Add-ons Marketplace
+   - Select the free tier if available and attach it to the app
+   - Heroku will expose the connection string as `JAWSDB_URL`
 
-3. **Deploy to Heroku**:
-   ```bash
-   git push heroku main
-   ```
+3. **Configure Environment Variables**:
+   - In the Settings tab, click Reveal Config Vars
+   - Add the following variables:
+     ```
+     NODE_ENV=production
+     JWT_PRIVATE_KEY=<your-private-key>
+     JWT_PUBLIC_KEY=<your-public-key>
+     RP_ID=your-app-name.herokuapp.com
+     ORIGIN=https://your-app-name.herokuapp.com
+     ```
+   - The backend can read local MySQL values directly or derive database settings from `JAWSDB_URL`
+   - If there is some error with the database, you may need to parse that long URL into its components and set `DB_HOST`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` explicitly.
 
-Heroku will automatically:
-- Detect Node.js project
-- Run `npm run heroku-postbuild` to install frontend dependencies, build frontend, and install backend dependencies
-- Start the app using the command in `Procfile` (node Backend/Server.js)
-- Serve your application at your Heroku domain
+4. **Initialize Database**:
+   - Use the JawsDB connection info to run the SQL from [Setup references/MYSQL_SETUP.md](Setup%20references/MYSQL_SETUP.md)
+   - You can use MySQL Workbench, HeidiSQL, or the mysql CLI to import the schema
+
+5. **Deploy**:
+   - Push your branch to GitHub or Heroku
+   - Heroku will run `npm run heroku-postbuild` and then start the app with `node Backend/Server.js`
+
+#### Alternative: Vercel
+
+If you want a frontend hosting option separate from Heroku, Vercel is a good fallback.
+
+1. Push the repo to GitHub.
+2. Sign in at [vercel.com](https://vercel.com).
+3. Add the repo as a new project.
+4. Set the Root Directory to `Frontend`.
+5. Add the needed environment variables and deploy.
+6. Use Railway or Render for the backend if you want a split deployment.
+
+Heroku will automatically detect the Node.js project, run the build hook, and serve the deployed app at your Heroku domain.
 
 #### Available NPM Scripts:
 
@@ -213,34 +277,20 @@ Heroku will automatically:
 
 ### Environment Variables
 
-Configure the following environment variables for your Heroku app. These are used by the backend server for database connections, authentication, and other configurations.
+Configure the following environment variables locally in `Backend/.env` and in Heroku config vars:
 
-#### Setting Environment Variables on Heroku:
-
-```bash
-# Set individual variables
-heroku config:set DATABASE_URL="mysql://user:password@host:port/database"
-heroku config:set JWT_PUBLIC_KEY="your-public-key"
-heroku config:set NODE_ENV="production"
-
-# Or set multiple at once
-heroku config:set VAR1=value1 VAR2=value2 VAR3=value3
-```
-The heroku variables should follow the same names as in the [.env.example] file
-
-#### View Current Configuration:
-
-```bash
-heroku config
-```
-
-#### Common Environment Variables:
-
-These variables should be set in your `.env` file locally and in Heroku config:
-- `DATABASE_URL` - MySQL connection string
-- `JWT_SECRET` - Secret key for JWT token signing
-- `NODE_ENV` - Set to "production" for Heroku
+- `NODE_ENV` - Set to `production` for Heroku
 - `PORT` - Server port (Heroku automatically sets this)
+- `ORIGIN` - Frontend origin, for example `http://localhost:3000` locally or your Heroku URL in production
+- `RP_ID` - WebAuthn relying party ID, for example `localhost` locally or `your-app-name.herokuapp.com` in production
+- `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Local MySQL connection values
+- `JAWSDB_URL` - Optional Heroku MySQL connection string provided by the JawsDB add-on
+- `JWT_PRIVATE_KEY` - RSA private key used to sign JWTs
+- `JWT_PUBLIC_KEY` - RSA public key used to verify JWTs
+
+If you are configuring Heroku manually, use the Dashboard or `heroku config:set` to add these values.
+
+For the frontend, `Frontend/.env` should point `REACT_APP_API_BASE_URL` at `http://localhost:5200` for local testing.
 
 ### SSL Certificates
 
